@@ -1,5 +1,7 @@
 const express = require("express");
+const axios = require("axios");
 const db = require("./db");
+const dbRfm = require("./db_rfm");
 const cors = require("cors");
 
 const app = express();
@@ -411,6 +413,44 @@ app.delete("/api/transactions/:id", (req, res)=> {
     });
 });
 
+
+// ENDPOINTS RFM
+
+app.post("/api/rfm/:customers_id", async (req, res) => {
+    try {
+        const customersId = req.params.customers_id;
+
+        const [transactions] = await dbRfm.query(
+            `SELECT
+                transactions_date,
+                total_amount
+             FROM transactions
+             WHERE customers_id = ?
+             ORDER BY transactions_date ASC`,
+            [customersId]
+        );
+
+        const pythonResponse = await axios.post(
+            "http://localhost:5001/rfm",
+            {
+                transactions: transactions
+            }
+        );
+
+        res.json({
+            customers_id: customersId,
+            result: pythonResponse.data
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Gagal menghitung RFM",
+            error: error.message
+        });
+    }
+});
 // start the server
 app.listen(PORT, ()=> {
     console.log(`server berjalan di http://localhost:${PORT}`);
