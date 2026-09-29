@@ -27,23 +27,22 @@ def calculate_rfm(transactions):
         print("Tipe transaction:")
         print(type(transaction))
 
-        transaction_date = datetime.strptime(
-            transaction["transactions_date"],
-            "%Y-%m-%d"
+        transaction_date = datetime.fromisoformat(
+            transaction["transactions_date"].replace("Z", "+00:00")
         )
 
         dates.append(transaction_date)
 
     last_transaction = max(dates)
 
-    today = datetime.now()
+    today = datetime.now(last_transaction.tzinfo)
 
     recency = (today - last_transaction).days
 
     frequency = len(transactions)
 
     monetary = sum(
-        transaction["total_amount"]
+        float(transaction["total_amount"])
         for transaction in transactions
     )
 
