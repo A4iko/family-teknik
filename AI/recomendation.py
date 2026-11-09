@@ -1,35 +1,34 @@
 def determine_segment(rfm):
-    recency = rfm['recency']
-    frequency = rfm['frequency']
-    monetary = rfm['monetary']
+    recency = int(rfm["recency"])
+    frequency = int(rfm["frequency"])
+    monetary = float(rfm["monetary"])
 
     if recency <= 30 and frequency >= 5 and monetary >= 500000:
         return "loyal customer"
-    elif recency <= 60 and frequency >= 3 :
+    if recency <= 60 and frequency >= 3:
         return "potential loyalist"
-    elif recency <= 90 :
-        return "bad customer"
-    else :
-        return " regular customer"
-    
+    if recency <= 90:
+        return "needs attention"
+    return "regular customer"
+
+
 def recommend_promo(segment):
-    if segment == "loyal customer":
-        return {
-            "promo": "Mendapatkan Discount up to 15% servis berikutnya.",
-            "alasan": "Karena Anda adalah pelanggan setia kami, kami ingin memberikan apresiasi dengan memberikan diskon khusus untuk layanan berikutnya."
+    promotions = {
+        "loyal customer": {
+            "promo": "Diskon hingga 15% untuk servis berikutnya.",
+            "alasan": "Apresiasi untuk pelanggan yang rutin menggunakan layanan bengkel."
+        },
+        "potential loyalist": {
+            "promo": "Diskon hingga 10% untuk kunjungan berikutnya.",
+            "alasan": "Mendorong pelanggan untuk kembali melakukan servis."
+        },
+        "needs attention": {
+            "promo": "Diskon khusus 20% untuk servis berikutnya.",
+            "alasan": "Mengajak pelanggan yang mulai jarang berkunjung untuk kembali."
+        },
+        "regular customer": {
+            "promo": "Penawaran servis berkala sesuai kebutuhan kendaraan.",
+            "alasan": "Menjaga hubungan dengan pelanggan dan mengingatkan jadwal perawatan."
         }
-    elif segment == "potential loyalist":
-        return {
-            "promo": "Mendapatkan Discount up to 10%.",
-            "alasan": "Karena Anda memiliki potensi untuk menjadi pelanggan setia, kami ingin memberikan penawaran khusus untuk mendorong Anda untuk terus berbelanja."
-        }
-    elif segment == "bad customer":
-        return {
-            "promo": "Mendapatkan discount khusus 20%.",
-            "alasan": "Kami ingin mengetahui apakah ada hal yang bisa kami bantu untuk meningkatkan pengalaman Anda."
-        }
-    else:
-        return {
-            "promo": "Mendapatkan penawaran terbatas.",
-            "alasan": "Kami memiliki penawaran khusus yang mungkin Anda minati."
-        }   
+    }
+    return promotions.get(segment, promotions["regular customer"])
