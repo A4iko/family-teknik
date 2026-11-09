@@ -65,8 +65,13 @@ function App() {
   useEffect(() => { load() }, [])
   const current = definitions[active]
   const customerOptions = data.customers.map(x => ({ value: x.id, label: x.name }))
-  const vehicleOptions = data.kendaraan.map(x => ({ value: x.id, label: x.plat_nomer + ' · ' + x.brand }))
-  const serviceOptions = data.service.map(x => ({ value: x.id, label: x.description }))
+  const vehicleOptions = data.kendaraan
+    .filter(x => !form.customers_id || Number(x.customers_id) === Number(form.customers_id))
+    .map(x => ({ value: x.id, label: x.plat_nomer + ' · ' + x.brand }))
+  const serviceOptions = data.service
+    .filter(x => (!form.customers_id || Number(x.customers_id) === Number(form.customers_id)) &&
+      (!form.kendaraan_id || Number(x.kendaraan_id) === Number(form.kendaraan_id)))
+    .map(x => ({ value: x.id, label: x.description }))
   const recent = useMemo(() => data.transactions.slice(0, 6), [data.transactions])
 
   async function check(response) {
@@ -156,7 +161,10 @@ function App() {
         <Panel title="Tambah data" subtitle="Isi formulir berikut untuk menyimpan data baru">
           <form className="form" onSubmit={submit}>
             {current.fields.map(([name, label, type, required]) => <label key={name}>{label}
-              {['customer', 'vehicle', 'service'].includes(type) ? <select required={required} value={form[name] || ''} onChange={e => setForm({ ...form, [name]: e.target.value ? Number(e.target.value) : '' })}><option value="">Pilih {label.toLowerCase()}</option>{(type === 'customer' ? customerOptions : type === 'vehicle' ? vehicleOptions : serviceOptions).map(x => <option key={x.value} value={x.value}>{x.label}</option>)}</select>
+              {['customer', 'vehicle', 'service'].includes(type) ? <select required={required} value={form[name] || ''} onChange={e => {
+                const value = e.target.value ? Number(e.target.value) : ''
+                setForm({ ...form, [name]: value, ...(type === 'customer' ? { kendaraan_id: '', service_id: '' } : type === 'vehicle' ? { service_id: '' } : {}) })
+              }}><option value="">Pilih {label.toLowerCase()}</option>{(type === 'customer' ? customerOptions : type === 'vehicle' ? vehicleOptions : serviceOptions).map(x => <option key={x.value} value={x.value}>{x.label}</option>)}</select>
               : <input required={required} type={type} value={form[name] ?? ''} onChange={e => setForm({ ...form, [name]: e.target.value })} />}</label>)}
             <div className="form-actions"><button className="button primary" disabled={saving}>{saving ? 'Menyimpan...' : editId ? 'Simpan perubahan' : 'Simpan data'}</button>{editId && <button type="button" className="button secondary" onClick={() => { setEditId(null); setForm({}); setNotice('Edit dibatalkan.') }}>Batal edit</button>}</div>
           </form>
