@@ -1,0 +1,50 @@
+name: Family Teknik CI
+
+on:
+  push:
+    branches: [master, mvp-family-teknik]
+  pull_request:
+    branches: [master]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm install
+      - name: Check backend JavaScript syntax
+        working-directory: backend
+        run: node --check server.js
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  ai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install AI dependencies
+        working-directory: AI
+        run: pip install -r requirements.txt
+      - name: Run Python tests
+        working-directory: AI
+        run: python -m unittest discover -s . -p "test_*.py"
