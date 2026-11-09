@@ -194,7 +194,7 @@ function RfmResult({ result, customer }) {
   const rfm = result.result?.rfm
   const promo = result.result?.promo_recommendation
   if (!rfm || rfm.recency === null) return <p className="muted">Belum ada transaksi untuk pelanggan ini.</p>
-  const phone = (customer?.phone || '').replace(/\\D/g, '').replace(/^0/, '62')
+  const phone = (customer?.phone || '').replace(/\D/g, '').replace(/^0/, '62')
   const whatsappMessage = encodeURIComponent(`Halo ${customer?.name || 'Pelanggan Family Teknik'}, ${promo?.promo || 'kami memiliki penawaran servis khusus untuk Anda'}. Silakan hubungi Family Teknik untuk informasi lebih lanjut. Terima kasih.`)
   const whatsappUrl = phone ? `https://wa.me/${phone}?text=${whatsappMessage}` : ''
   return <div><div className="rfm-stats"><div><span>Recency</span><strong>{rfm.recency} hari</strong></div><div><span>Frequency</span><strong>{rfm.frequency} kali</strong></div><div><span>Monetary</span><strong>{money(rfm.monetary)}</strong></div></div><div className="segment"><span>Segmen pelanggan</span><h2>{result.result.segment}</h2></div>{promo && <div className="promo"><strong>Rekomendasi promo</strong><p>{promo.promo}</p><small>{promo.alasan}</small></div>}{promo && (phone ? <button className="button whatsapp" onClick={() => window.open(whatsappUrl, '_blank', 'noopener,noreferrer')}>Buka WhatsApp untuk mengirim promo</button> : <p className="muted">Nomor telepon pelanggan belum tersedia. Tambahkan nomor pada data pelanggan untuk mengirim promo melalui WhatsApp.</p>)}</div>
