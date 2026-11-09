@@ -1,53 +1,34 @@
-from datetime import datetime
-
+from datetime import date, datetime
 
 def calculate_rfm(transactions):
-
-    print("=== DEBUG RFM ===")
-    print("Data transactions:")
-    print(transactions)
-
-    print("Tipe transactions:")
-    print(type(transactions))
-
     if not transactions:
-        return {
-            "recency": None,
-            "frequency": 0,
-            "monetary": 0
-        }
+        return {"recency": None, "frequency": 0, "monetary": 0}
 
     dates = []
+    monetary = 0.0
 
     for transaction in transactions:
-
-        print("Data transaction:")
-        print(transaction)
-
-        print("Tipe transaction:")
-        print(type(transaction))
-
-        transaction_date = datetime.fromisoformat(
-            transaction["transactions_date"].replace("Z", "+00:00")
-        )
-
+        raw_date = transaction.get("transactions_date")
+        if not raw_date:
+            continue
+        if isinstance(raw_date, (datetime, date)):
+            transaction_date = raw_date
+        else:
+            transaction_date = datetime.fromisoformat(
+                str(raw_date).replace("Z", "+00:00")
+            )
         dates.append(transaction_date)
+        monetary += float(transaction.get("total_amount") or 0)
+
+    if not dates:
+        return {"recency": None, "frequency": len(transactions), "monetary": monetary}
 
     last_transaction = max(dates)
-
-    today = datetime.now(last_transaction.tzinfo)
-
+    today = datetime.now(last_transaction.tzinfo) if isinstance(last_transaction, datetime) else date.today()
     recency = (today - last_transaction).days
 
-    frequency = len(transactions)
-
-    monetary = sum(
-        float(transaction["total_amount"])
-        for transaction in transactions
-    )
-
     return {
-        "recency": recency,
-        "frequency": frequency,
+        "recency": max(recency, 0),
+        "frequency": len(transactions),
         "monetary": monetary
     }

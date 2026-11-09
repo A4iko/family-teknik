@@ -1,26 +1,16 @@
+require("dotenv").config();
 const mysql = require("mysql2/promise");
 
 const dbRfm = mysql.createPool({
-    host: "localhost",
-    port: 3307,
-    user: "root",
-    password: "",
-    database: "family_teknik"
+  host: process.env.DB_HOST || "localhost",
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "",
+  database: process.env.DB_NAME || "family_teknik",
+  waitForConnections: true,
+  connectionLimit: 5,
+  queueLimit: 0,
+  dateStrings: true,
 });
-
-async function testConnection() {
-    try {
-        const connection = await dbRfm.getConnection();
-
-        console.log("Database RFM berhasil terhubung");
-
-        connection.release();
-    } catch (error) {
-        console.error("Database RFM gagal terhubung:");
-        console.error(error.message);
-    }
-}
-
-testConnection();
 
 module.exports = dbRfm;

@@ -1,457 +1,187 @@
+require("dotenv").config();
 const express = require("express");
+const cors = require("cors");
 const axios = require("axios");
 const db = require("./db");
 const dbRfm = require("./db_rfm");
-const cors = require("cors");
 
 const app = express();
-const PORT = 5000;
+const PORT = Number(process.env.PORT || 5000);
+const AI_URL = process.env.AI_URL || "http://127.0.0.1:5001";
 
 app.use(cors());
 app.use(express.json());
 
+const runQuery = (sql, values = []) => new Promise((resolve, reject) => {
+  db.query(sql, values, (error, results) => error ? reject(error) : resolve(results));
+});
 
-app.get("/", (req, res)=> {
+const sendError = (res, error, message = "Terjadi kesalahan pada server") => {
+  console.error(message, error.message);
+  res.status(500).json({ message, error: error.message });
+};
+
+app.get("/", (req, res) => res.json({ message: "Backend Family Teknik berjalan" }));
+app.get("/api/health", async (req, res) => {
+  try {
+    await runQuery("SELECT 1");
+    res.json({ status: "ok", database: "connected", ai_url: AI_URL });
+  } catch (error) {
+    sendError(res, error, "Backend aktif, tetapi database belum terhubung");
+  }
+});
+
+app.get("/api/dashboard", async (req, res) => {
+  try {
+    const [customers, vehicles, services, transactions, revenue] = await Promise.all([
+      runQuery("SELECT COUNT(*) AS total FROM customers"),
+      runQuery("SELECT COUNT(*) AS total FROM kendaraan"),
+      runQuery("SELECT COUNT(*) AS total FROM service"),
+      runQuery("SELECT COUNT(*) AS total FROM transactions"),
+      runQuery("SELECT COALESCE(SUM(total_amount), 0) AS total FROM transactions"),
+    ]);
     res.json({
-        message: "Backend family teknik berjalan"
+      customers: customers[0].total,
+      vehicles: vehicles[0].total,
+      services: services[0].total,
+      transactions: transactions[0].total,
+      revenue: Number(revenue[0].total),
     });
+  } catch (error) {
+    sendError(res, error, "Gagal mengambil ringkasan dashboard");
+  }
 });
 
-// GET ALL CUSTOMERS
-app.get("/api/customers", (req, res)=> {
-    const sql = "SELECT * FROM customers";
+const resources = {
+  customers: {
+    table: "customers",
+    columns: ["name", "phone", "address"],
+    required: ["name"],
+    order: "id DESC",
+  },
+  kendaraan: {
+    table: "kendaraan",
+    columns: ["customers_id", "plat_nomer", "brand", "tipe", "year"],
+    required: ["customers_id", "plat_nomer", "brand", "tipe"],
+    order: "id DESC",
+  },
+  service: {
+    table: "service",
+    columns: ["customers_id", "kendaraan_id", "service_date", "description", "service_cost"],
+    required: ["customers_id", "kendaraan_id", "service_date", "description"],
+    order: "service_date DESC, id DESC",
+  },
+  transactions: {
+    table: "transactions",
+    columns: ["customers_id", "kendaraan_id", "service_id", "total_amount", "transactions_date"],
+    required: ["customers_id", "kendaraan_id", "total_amount"],
+    order: "transactions_date DESC, id DESC",
+  },
+};
 
-    db.query (sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data customers",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// GET CUSTOMER BY ID
-app.get("/api/customers/:id", (req, res)=> {
-    const customersid = req.params.id;
-    const sql = "SELECT * FROM customers WHERE id = ?";
-
-    db.query(sql, [customersid], (err, results)=> {
-     if (err) {
-        return res.status(500).json({
-            message: "Terjadi kesalahan saat mengambil data customer",
-            error: err.message
-        });
-     }
-     if (results.length === 0) {
-        return res.status(404).json({
-            message: "Customer tidak ditemukan"
-        });
-     }
-     res.json(results[0]);
-    });
-});
-
-// POST CREATE CUSTOMER
-app.post("/api/customers", (req, res)=> {
-    const { name, phone, address } = req.body;
-    
-    if (!name) {
-        return res.status(400).json({
-            message: "Nama customer harus diisi"
-        });
+for (const [resource, config] of Object.entries(resources)) {
+  app.get(`/api/${resource}`, async (req, res) => {
+    try {
+      const rows = await runQuery(`SELECT * FROM ${config.table} ORDER BY ${config.order}`);
+      res.json(rows);
+    } catch (error) {
+      sendError(res, error, `Gagal mengambil data ${resource}`);
     }
-     const sql = `INSERT INTO customers 
-     (name, phone, address) 
-     VALUES (?, ?, ?)`;
+  });
 
-     db.query(
-        sql,
-        [name, phone, address],
-        (err, results)=> {
-            if (err) {
-                return res.status(500).json({
-                    message: "Terjadi kesalahan saat menambahkan customer",
-                    error: err.message
-                });
-            }
-            res.status(201).json({
-                message: "Customer berhasil ditambahkan",
-                id: results.insertId
-            });
-        }
-     )
+  app.get(`/api/${resource}/:id`, async (req, res) => {
+    try {
+      const rows = await runQuery(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
+      if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+      res.json(rows[0]);
+    } catch (error) {
+      sendError(res, error, `Gagal mengambil detail ${resource}`);
+    }
+  });
+
+  app.post(`/api/${resource}`, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const missing = config.required.filter((field) => body[field] === undefined || body[field] === null || body[field] === "");
+      if (missing.length) return res.status(400).json({ message: `Kolom wajib diisi: ${missing.join(", ")}` });
+      const columns = config.columns.filter((field) => body[field] !== undefined);
+      const values = columns.map((field) => body[field] === "" ? null : body[field]);
+      const placeholders = columns.map(() => "?").join(", ");
+      const result = await runQuery(
+        `INSERT INTO ${config.table} (${columns.join(", ")}) VALUES (${placeholders})`,
+        values
+      );
+      res.status(201).json({ message: "Data berhasil ditambahkan", id: result.insertId });
+    } catch (error) {
+      sendError(res, error, `Gagal menambahkan data ${resource}`);
+    }
+  });
+
+  app.put(`/api/${resource}/:id`, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const columns = config.columns.filter((field) => body[field] !== undefined);
+      if (!columns.length) return res.status(400).json({ message: "Tidak ada data yang diperbarui" });
+      const values = columns.map((field) => body[field] === "" ? null : body[field]);
+      const result = await runQuery(
+        `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
+        [...values, req.params.id]
+      );
+      if (!result.affectedRows) return res.status(404).json({ message: "Data tidak ditemukan" });
+      res.json({ message: "Data berhasil diperbarui" });
+    } catch (error) {
+      sendError(res, error, `Gagal memperbarui data ${resource}`);
+    }
+  });
+
+  app.delete(`/api/${resource}/:id`, async (req, res) => {
+    try {
+      const result = await runQuery(`DELETE FROM ${config.table} WHERE id = ?`, [req.params.id]);
+      if (!result.affectedRows) return res.status(404).json({ message: "Data tidak ditemukan" });
+      res.json({ message: "Data berhasil dihapus" });
+    } catch (error) {
+      sendError(res, error, "Data tidak dapat dihapus. Periksa relasi data terlebih dahulu.");
+    }
+  });
+}
+
+app.get("/api/customer-history/:id", async (req, res) => {
+  try {
+    const rows = await runQuery(
+      `SELECT t.*, c.name AS customer_name, k.plat_nomer, k.brand, k.tipe,
+              s.description AS service_description
+       FROM transactions t
+       JOIN customers c ON c.id = t.customers_id
+       JOIN kendaraan k ON k.id = t.kendaraan_id
+       LEFT JOIN service s ON s.id = t.service_id
+       WHERE t.customers_id = ?
+       ORDER BY t.transactions_date DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    sendError(res, error, "Gagal mengambil riwayat pelanggan");
+  }
 });
-
-
-// put UPDATE CUSTOMER BY ID
-
-app.put("/api/customers/:id", (req, res)=> {
-    const id = req.params.id;
-    const { name, phone, address } = req.body;
-
-    const sql = "UPDATE customers SET name = ?, phone = ?, address = ? WHERE id = ?";
-
-    db.query(sql, [name, phone, address, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate customer",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Customer berhasil diupdate",
-            data: results
-        });
-    });
-});
-
-// DELETE CUSTOMER BY ID
-app.delete("/api/customers/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM customers WHERE id = ?";
-
-    db.query(sql, [id], (err, results)=> {
-        if (err){
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus customer",
-                error: err.message
-            });
-        }
-
-        res.json({
-            message: "Customer berhasil dihapus",
-            data: results
-        });
-    });
-});
-
-//===================== KENDARAAN
-
-// GET ALL KENDARAAN
-app.get("/api/kendaraan", (req, res)=> {
-    const sql = "SELECT * FROM kendaraan";
-
-    db.query (sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data customers",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// GET KENDARAAN BY ID
-app.get("/api/kendaraan/:id", (req, res)=> {
-    const kendaraanid = req.params.id;
-    const sql = "SELECT * FROM kendaraan WHERE id = ?";
-
-    db.query(sql, [kendaraanid], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data kendaraan",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// POST CREATE KENDARAAN
-app.post("/api/kendaraan", (req, res)=> {
-    const { customers_id, plat_nomer, tipe, brand, year} = req.body;
-
-    const sql = `INSERT INTO kendaraan 
-     (customers_id, plat_nomer, tipe, brand, year) 
-     VALUES (?, ?, ?, ?, ?)`;
-
-     db.query(
-        sql,
-        [customers_id, plat_nomer, tipe, brand, year],
-        (err, results)=> {
-            if (err) {
-                return res.status(500).json({
-                    message: "Terjadi kesalahan saat menambahkan kendaraan",
-                    error: err.message
-                });
-            }
-            res.status(201).json({
-                message: "Kendaraan berhasil ditambahkan",
-                id: results.insertId
-            });
-        }
-     )
-});
-
-// put UPDATE KENDARAAN BY ID
-app.put("/api/kendaraan/:id", (req, res)=> {
-    const id = req.params.id;
-    const { customers_id, plat_nomer, tipe, brand, year} = req.body;
-
-    const sql = "UPDATE kendaraan SET customers_id = ?, plat_nomer = ?, tipe = ?, brand = ?, year = ? WHERE id = ?";
-
-    db.query(sql, [customers_id, plat_nomer, tipe, brand, year, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate kendaraan",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Kendaraan berhasil diupdate",
-            data: results
-        });
-    });
-});
-
-// DELETE KENDARAAN BY ID
-app.delete("/api/kendaraan/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM kendaraan WHERE id = ?";
-    db.query(sql, [id], (err, results)=> {
-        if (err){
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus kendaraan",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Kendaraan berhasil dihapus",
-            data: results
-        });
-    });
-});
-
-// ===================== SERVICE
-
-// GET ALL SERVICE
-app.get("/api/service", (req, res)=> {
-    const sql = "SELECT * FROM service";
-    db.query(sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data service",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// GET SERVICE BY ID
-app.get("/api/service/:id", (req, res)=> {
-    const serviceid = req.params.id;
-    const sql = "SELECT * FROM service WHERE id = ?";
-    db.query(sql, [serviceid], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data service",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-
-// POST CREATE SERVICE
-app.post("/api/service", (req, res)=> {
-    const { customers_id, kendaraan_id, service_date, description, service_cost} = req.body;
-
-    const sql = `INSERT INTO service 
-     (customers_id, kendaraan_id, service_date, description, service_cost) 
-     VALUES (?, ?, ?, ?, ?)`;
-
-     db.query(
-        sql,
-        [customers_id, kendaraan_id, service_date, description, service_cost],
-        (err, results)=> {
-            if (err) {
-                return res.status(500).json({
-                    message: "Terjadi kesalahan saat menambahkan service",
-                    error: err.message
-                });
-            }
-            res.status(201).json({
-                message: "service berhasil ditambahkan",
-                id: results.insertId
-            });
-        }
-     )
-});
-
-// put UPDATE SERVICE BY ID
-app.put("/api/service/:id", (req, res)=> {
-    const id = req.params.id;
-    const { kendaraan_id, service_date, description, cost} = req.body;
-
-    const sql = "UPDATE service SET kendaraan_id = ?, service_date = ?, description = ?, cost = ? WHERE id = ?";
-
-    db.query(sql, [kendaraan_id, service_date, description, cost, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate service",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Service berhasil diupdate",
-            data: results
-        });
-    });
-});
-
-// DELETE SERVICE BY ID
-app.delete("/api/service/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM service WHERE id = ?";
-    db.query(sql, [id], (err, results)=> {
-        if (err){
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus service",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Service berhasil dihapus",
-            data: results
-        });
-    });
-});
-
-
-//===================== TRANSAKSI
-
-// GET ALL TRANSAKSI  
-app.get("/api/transactions", (req, res)=> {
-    const sql = "SELECT * FROM transactions";
-    db.query(sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data transaksi",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// GET TRANSAKSI BY ID
-app.get("/api/transactions/:id", (req, res)=> {
-    const transaksi_id = req.params.id;
-    const sql = "SELECT * FROM transactions WHERE id = ?";
-    db.query(sql, [transaksi_id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data transaksi",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// POST CREATE TRANSAKSI
-app.post("/api/transactions", (req, res)=> {
-    const { customers_id, kendaraan_id, service_id, total_amount, transactions_date} = req.body;
-
-    const sql = "INSERT INTO transactions (customers_id, kendaraan_id, service_id, total_amount, transactions_date) VALUES (?, ?, ?, ?, ?)";
-
-    db.query(sql, [customers_id, kendaraan_id, service_id, total_amount, transactions_date], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menambahkan transaksi",
-                error: err.message
-            });
-        }
-        res.status(201).json({
-            message: "Transaksi berhasil ditambahkan",
-            id: results.insertId
-        });
-    });
-});
-
-// put UPDATE TRANSAKSI BY ID
-app.put("/api/transactions/:id", (req, res)=> {
-    const id = req.params.id;
-    const { costumers_id, service_id, total_amount, transactions_date} = req.body;  
-    const sql = "UPDATE transaksi SET costumers_id = ?, service_id = ?, total_amount = ?, transactions_date = ? WHERE id = ?";
-
-    db.query(sql, [costumers_id, service_id, total_amount, transactions_date, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate transaksi",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Transaksi berhasil diupdate",
-            data: results
-        });
-    });
-});
-
-// DELETE TRANSAKSI BY ID
-app.delete("/api/transactions/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM transaksi WHERE id = ?";
-
-    db.query(sql, [id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus transaksi",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Transaksi berhasil dihapus",
-            data: results
-        });
-    });
-});
-
-
-// ENDPOINTS RFM
 
 app.post("/api/rfm/:customers_id", async (req, res) => {
-    try {
-        const customersId = req.params.customers_id;
-
-        const [transactions] = await dbRfm.query(
-            `SELECT
-                transactions_date,
-                total_amount
-             FROM transactions
-             WHERE customers_id = ?
-             ORDER BY transactions_date ASC`,
-            [customersId]
-        );
-
-        const pythonResponse = await axios.post(
-            "http://localhost:5001/rfm",
-            {
-                transactions: transactions
-            }
-        );
-
-        res.json({
-            customers_id: customersId,
-            result: pythonResponse.data
-        });
-
-    } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            message: "Gagal menghitung RFM",
-            error: error.message
-        });
-    }
+  try {
+    const customersId = req.params.customers_id;
+    const [transactions] = await dbRfm.query(
+      `SELECT transactions_date, total_amount
+       FROM transactions
+       WHERE customers_id = ?
+       ORDER BY transactions_date ASC`,
+      [customersId]
+    );
+    const response = await axios.post(`${AI_URL}/rfm`, { transactions }, { timeout: 15000 });
+    res.json({ customers_id: Number(customersId), transaction_count: transactions.length, result: response.data });
+  } catch (error) {
+    const detail = error.response?.data?.message || error.message;
+    res.status(502).json({ message: "Gagal menghitung RFM. Pastikan layanan AI aktif.", error: detail });
+  }
 });
-// start the server
-app.listen(PORT, ()=> {
-    console.log(`server berjalan di http://localhost:${PORT}`);
-});
+
+app.use((req, res) => res.status(404).json({ message: "Endpoint tidak ditemukan" }));
+
+app.listen(PORT, () => console.log(`Backend Family Teknik berjalan di http://localhost:${PORT}`));
