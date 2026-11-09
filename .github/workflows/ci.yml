@@ -48,3 +48,53 @@ jobs:
       - name: Run Python tests
         working-directory: AI
         run: python -m unittest discover -s . -p "test_*.py"
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: family_teknik
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install MySQL client
+        run: sudo apt-get update && sudo apt-get install -y mysql-client jq
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm install
+      - name: Install AI dependencies
+        working-directory: AI
+        run: pip install -r requirements.txt
+      - name: Prepare database
+        run: mysql -h 127.0.0.1 -uroot -proot < database/schema.sql
+      - name: Start AI service
+        working-directory: AI
+        run: python app.py > /tmp/ai.log 2>&1 &
+      - name: Start backend
+        working-directory: backend
+        env:
+          PORT: 5000
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_USER: root
+          DB_PASSWORD: root
+          DB_NAME: family_teknik
+          AI_URL: http://127.0.0.1:5001
+        run: npm start > /tmp/backend.log 2>&1 &
+      - name: Run API integration test
+        run: bash tests/smoke-api.sh
