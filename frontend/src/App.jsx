@@ -174,7 +174,7 @@ function App() {
         <Panel title="Hitung segmentasi pelanggan" subtitle="Pilih pelanggan untuk menghitung Recency, Frequency, dan Monetary">
           <div className="form"><label>Pelanggan<select value={rfmCustomer} onChange={e => setRfmCustomer(e.target.value)}><option value="">Pilih pelanggan</option>{customerOptions.map(x => <option key={x.value} value={x.value}>{x.label}</option>)}</select></label><button className="button primary" disabled={!rfmCustomer} onClick={runRfm}>Hitung RFM dan rekomendasi promo</button></div>
         </Panel>
-        {rfmResult && <Panel title="Hasil analisis" subtitle="Hasil perhitungan dari layanan AI"><RfmResult result={rfmResult} /></Panel>}
+        {rfmResult && <Panel title="Hasil analisis" subtitle="Hasil perhitungan dari layanan AI"><RfmResult result={rfmResult} customer={data.customers.find(x => Number(x.id) === Number(rfmCustomer))} /></Panel>}
         <div className="info-note"><strong>Penjelasan singkat</strong><p>Recency mengukur jarak hari sejak transaksi terakhir. Frequency menghitung jumlah transaksi. Monetary menjumlahkan nilai transaksi pelanggan.</p></div>
       </section>}
       <footer>Family Teknik · Sistem Rekomendasi Promo Adaptif berbasis RFM</footer>
@@ -189,11 +189,14 @@ function TransactionTable({ rows, data }) {
   if (!rows.length) return <Empty />
   return <div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Pelanggan</th><th>Kendaraan</th><th>Total</th></tr></thead><tbody>{rows.map(r => <tr key={r.id}><td>{dateText(r.transactions_date)}</td><td>{data.customers.find(x => x.id === r.customers_id)?.name || '-'}</td><td>{data.kendaraan.find(x => x.id === r.kendaraan_id)?.plat_nomer || '-'}</td><td>{money(r.total_amount)}</td></tr>)}</tbody></table></div>
 }
-function RfmResult({ result }) {
+function RfmResult({ result, customer }) {
   if (result.error) return <div className="alert error">{result.error}</div>
   const rfm = result.result?.rfm
   const promo = result.result?.promo_recommendation
   if (!rfm || rfm.recency === null) return <p className="muted">Belum ada transaksi untuk pelanggan ini.</p>
-  return <div><div className="rfm-stats"><div><span>Recency</span><strong>{rfm.recency} hari</strong></div><div><span>Frequency</span><strong>{rfm.frequency} kali</strong></div><div><span>Monetary</span><strong>{money(rfm.monetary)}</strong></div></div><div className="segment"><span>Segmen pelanggan</span><h2>{result.result.segment}</h2></div>{promo && <div className="promo"><strong>Rekomendasi promo</strong><p>{promo.promo}</p><small>{promo.alasan}</small></div>}</div>
+  const phone = (customer?.phone || '').replace(/\\D/g, '').replace(/^0/, '62')
+  const whatsappMessage = encodeURIComponent(`Halo ${customer?.name || 'Pelanggan Family Teknik'}, ${promo?.promo || 'kami memiliki penawaran servis khusus untuk Anda'}. Silakan hubungi Family Teknik untuk informasi lebih lanjut. Terima kasih.`)
+  const whatsappUrl = phone ? `https://wa.me/${phone}?text=${whatsappMessage}` : ''
+  return <div><div className="rfm-stats"><div><span>Recency</span><strong>{rfm.recency} hari</strong></div><div><span>Frequency</span><strong>{rfm.frequency} kali</strong></div><div><span>Monetary</span><strong>{money(rfm.monetary)}</strong></div></div><div className="segment"><span>Segmen pelanggan</span><h2>{result.result.segment}</h2></div>{promo && <div className="promo"><strong>Rekomendasi promo</strong><p>{promo.promo}</p><small>{promo.alasan}</small></div>}{promo && (phone ? <button className="button whatsapp" onClick={() => window.open(whatsappUrl, '_blank', 'noopener,noreferrer')}>Buka WhatsApp untuk mengirim promo</button> : <p className="muted">Nomor telepon pelanggan belum tersedia. Tambahkan nomor pada data pelanggan untuk mengirim promo melalui WhatsApp.</p>)}</div>
 }
 export default App
