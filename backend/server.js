@@ -159,7 +159,6 @@ for (const [resource, config] of Object.entries(resources)) {
         `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
         [...values, req.params.id]
       );
-      if (!result.affectedRows) return res.status(404).json({ message: "Data tidak ditemukan" });
       res.json({ message: "Data berhasil diperbarui" });
     } catch (error) {
       sendError(res, error, `Gagal memperbarui data ${resource}`);
