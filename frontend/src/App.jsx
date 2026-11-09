@@ -37,6 +37,7 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [form, setForm] = useState({})
+  const [editId, setEditId] = useState(null)
   const [saving, setSaving] = useState(false)
   const [rfmResult, setRfmResult] = useState(null)
   const [rfmCustomer, setRfmCustomer] = useState('')
@@ -82,15 +83,27 @@ function App() {
       const payload = { ...form }
       if (payload.year === '') payload.year = null
       if (payload.service_id === '') payload.service_id = null
-      const response = await fetch(API + '/api/' + current.endpoint, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      const response = await fetch(API + '/api/' + current.endpoint + (editId ? '/' + editId : ''), {
+        method: editId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
       })
       await check(response)
       setForm({})
-      setNotice('Data berhasil disimpan.')
+      setEditId(null)
+      setNotice(editId ? 'Data berhasil diperbarui.' : 'Data berhasil disimpan.')
       await load()
     } catch (e) { setNotice(e.message) }
     finally { setSaving(false) }
+  }
+
+  const edit = (resource, row) => {
+    if (resource !== active) return
+    const values = { ...row }
+    if (values.transactions_date) values.transactions_date = String(values.transactions_date).replace(' ', 'T').slice(0, 16)
+    if (values.service_date) values.service_date = String(values.service_date).slice(0, 10)
+    setForm(values)
+    setEditId(row.id)
+    setNotice('Mode edit aktif. Ubah data pada formulir lalu simpan.')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const remove = async (resource, id) => {
@@ -138,14 +151,14 @@ function App() {
       </section>}
       {!loading && current && <section className="content-grid">
         <Panel title={current.title} subtitle="Kelola dan pantau data bengkel">
-          {data[active].length === 0 ? <Empty /> : <div className="table-wrap"><table><thead><tr>{current.headers.map(h => <th key={h}>{h}</th>)}<th>Aksi</th></tr></thead><tbody>{data[active].map(row => <tr key={row.id}>{current.cells(row, data).map((cell, i) => <td key={i}>{cell}</td>)}<td><button className="text-button danger" onClick={() => remove(current.endpoint, row.id)}>Hapus</button></td></tr>)}</tbody></table></div>}
+          {data[active].length === 0 ? <Empty /> : <div className="table-wrap"><table><thead><tr>{current.headers.map(h => <th key={h}>{h}</th>)}<th>Aksi</th></tr></thead><tbody>{data[active].map(row => <tr key={row.id}>{current.cells(row, data).map((cell, i) => <td key={i}>{cell}</td>)}<td><div className="row-actions"><button className="text-button" onClick={() => edit(current.endpoint, row)}>Edit</button><button className="text-button danger" onClick={() => remove(current.endpoint, row.id)}>Hapus</button></div></td></tr>)}</tbody></table></div>}
         </Panel>
         <Panel title="Tambah data" subtitle="Isi formulir berikut untuk menyimpan data baru">
           <form className="form" onSubmit={submit}>
             {current.fields.map(([name, label, type, required]) => <label key={name}>{label}
               {['customer', 'vehicle', 'service'].includes(type) ? <select required={required} value={form[name] || ''} onChange={e => setForm({ ...form, [name]: e.target.value ? Number(e.target.value) : '' })}><option value="">Pilih {label.toLowerCase()}</option>{(type === 'customer' ? customerOptions : type === 'vehicle' ? vehicleOptions : serviceOptions).map(x => <option key={x.value} value={x.value}>{x.label}</option>)}</select>
               : <input required={required} type={type} value={form[name] ?? ''} onChange={e => setForm({ ...form, [name]: e.target.value })} />}</label>)}
-            <button className="button primary" disabled={saving}>{saving ? 'Menyimpan...' : 'Simpan data'}</button>
+            <div className="form-actions"><button className="button primary" disabled={saving}>{saving ? 'Menyimpan...' : editId ? 'Simpan perubahan' : 'Simpan data'}</button>{editId && <button type="button" className="button secondary" onClick={() => { setEditId(null); setForm({}); setNotice('Edit dibatalkan.') }}>Batal edit</button>}</div>
           </form>
         </Panel>
       </section>}
