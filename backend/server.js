@@ -21,6 +21,14 @@ const sendError = (res, error, message = "Terjadi kesalahan pada server") => {
   res.status(500).json({ message, error: error.message });
 };
 
+function normalizeFieldValue(resource, field, value) {
+  if (value === "") return null;
+  if (resource === "transactions" && field === "transactions_date" && typeof value === "string") {
+    return value.replace("T", " ");
+  }
+  return value;
+}
+
 app.get("/", (req, res) => res.json({ message: "Backend Family Teknik berjalan" }));
 app.get("/api/health", async (req, res) => {
   try {
@@ -131,8 +139,11 @@ for (const [resource, config] of Object.entries(resources)) {
       if (missing.length) return res.status(400).json({ message: `Kolom wajib diisi: ${missing.join(", ")}` });
       const relationError = await validateRelations(resource, body);
       if (relationError) return res.status(400).json({ message: relationError });
-      const columns = config.columns.filter((field) => body[field] !== undefined);
-      const values = columns.map((field) => body[field] === "" ? null : body[field]);
+      const columns = config.columns.filter((field) =>
+        body[field] !== undefined &&
+        !(resource === "transactions" && field === "transactions_date" && body[field] === "")
+      );
+      const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
       const placeholders = columns.map(() => "?").join(", ");
       const result = await runQuery(
         `INSERT INTO ${config.table} (${columns.join(", ")}) VALUES (${placeholders})`,
@@ -147,14 +158,17 @@ for (const [resource, config] of Object.entries(resources)) {
   app.put(`/api/${resource}/:id`, async (req, res) => {
     try {
       const body = req.body || {};
-      const columns = config.columns.filter((field) => body[field] !== undefined);
+      const columns = config.columns.filter((field) =>
+        body[field] !== undefined &&
+        !(resource === "transactions" && field === "transactions_date" && body[field] === "")
+      );
       if (!columns.length) return res.status(400).json({ message: "Tidak ada data yang diperbarui" });
       const [existingRows] = await dbRfm.query(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
       if (!existingRows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
       const mergedBody = { ...existingRows[0], ...body };
       const relationError = await validateRelations(resource, mergedBody);
       if (relationError) return res.status(400).json({ message: relationError });
-      const values = columns.map((field) => body[field] === "" ? null : body[field]);
+      const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
       const result = await runQuery(
         `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
         [...values, req.params.id]
