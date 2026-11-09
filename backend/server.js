@@ -79,6 +79,31 @@ const resources = {
   },
 };
 
+async function validateRelations(resource, body) {
+  if (resource === "kendaraan") {
+    const [customers] = await dbRfm.query("SELECT id FROM customers WHERE id = ?", [body.customers_id]);
+    if (!customers.length) return "Pelanggan tidak ditemukan.";
+  }
+
+  if (resource === "service" || resource === "transactions") {
+    const [vehicles] = await dbRfm.query("SELECT customers_id FROM kendaraan WHERE id = ?", [body.kendaraan_id]);
+    if (!vehicles.length) return "Kendaraan tidak ditemukan.";
+    if (body.customers_id && Number(vehicles[0].customers_id) !== Number(body.customers_id)) {
+      return "Kendaraan tersebut bukan milik pelanggan yang dipilih.";
+    }
+  }
+
+  if (resource === "transactions" && body.service_id) {
+    const [services] = await dbRfm.query("SELECT customers_id, kendaraan_id FROM service WHERE id = ?", [body.service_id]);
+    if (!services.length) return "Data servis tidak ditemukan.";
+    if (Number(services[0].customers_id) !== Number(body.customers_id) ||
+        Number(services[0].kendaraan_id) !== Number(body.kendaraan_id)) {
+      return "Servis yang dipilih tidak cocok dengan pelanggan atau kendaraan.";
+    }
+  }
+  return null;
+}
+
 for (const [resource, config] of Object.entries(resources)) {
   app.get(`/api/${resource}`, async (req, res) => {
     try {
@@ -104,6 +129,8 @@ for (const [resource, config] of Object.entries(resources)) {
       const body = req.body || {};
       const missing = config.required.filter((field) => body[field] === undefined || body[field] === null || body[field] === "");
       if (missing.length) return res.status(400).json({ message: `Kolom wajib diisi: ${missing.join(", ")}` });
+      const relationError = await validateRelations(resource, body);
+      if (relationError) return res.status(400).json({ message: relationError });
       const columns = config.columns.filter((field) => body[field] !== undefined);
       const values = columns.map((field) => body[field] === "" ? null : body[field]);
       const placeholders = columns.map(() => "?").join(", ");
@@ -122,6 +149,11 @@ for (const [resource, config] of Object.entries(resources)) {
       const body = req.body || {};
       const columns = config.columns.filter((field) => body[field] !== undefined);
       if (!columns.length) return res.status(400).json({ message: "Tidak ada data yang diperbarui" });
+      const [existingRows] = await dbRfm.query(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
+      if (!existingRows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+      const mergedBody = { ...existingRows[0], ...body };
+      const relationError = await validateRelations(resource, mergedBody);
+      if (relationError) return res.status(400).json({ message: relationError });
       const values = columns.map((field) => body[field] === "" ? null : body[field]);
       const result = await runQuery(
         `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
