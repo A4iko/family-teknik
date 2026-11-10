@@ -10,7 +10,7 @@ services:
       - key: DB_HOST
         sync: false
       - key: DB_PORT
-        value: "4000"
+        sync: false
       - key: DB_USER
         sync: false
       - key: DB_PASSWORD
@@ -42,10 +42,13 @@ services:
   - type: web
     name: family-teknik-frontend
     runtime: static
-    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       - key: VITE_API_URL
         sync: false
