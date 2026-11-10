@@ -194,9 +194,9 @@ app.use("/api", requireAuth);
 app.get("/api/data-integrity", async (req, res) => {
   try {
     const [customers, vehicles, services, transactions] = await Promise.all([
-      runQuery("SELECT phone_normalized AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM customers WHERE phone_normalized IS NOT NULL GROUP BY phone_normalized HAVING COUNT(*) > 1"),
-      runQuery("SELECT plat_normalized AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM kendaraan GROUP BY plat_normalized HAVING COUNT(*) > 1"),
-      runQuery("SELECT CONCAT(customers_id, ':', kendaraan_id, ':', service_date, ':', description_hash, ':', service_cost) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM service GROUP BY customers_id, kendaraan_id, service_date, description_hash, service_cost HAVING COUNT(*) > 1"),
+      runQuery("SELECT REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '') AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM customers WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '') <> '' GROUP BY duplicate_value HAVING COUNT(*) > 1"),
+      runQuery("SELECT UPPER(REGEXP_REPLACE(plat_nomer, '[^A-Z0-9]', '')) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM kendaraan GROUP BY duplicate_value HAVING COUNT(*) > 1"),
+      runQuery("SELECT CONCAT_WS('|', customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM service GROUP BY customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost HAVING COUNT(*) > 1"),
       runQuery("SELECT service_id AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM transactions WHERE service_id IS NOT NULL GROUP BY service_id HAVING COUNT(*) > 1"),
     ]);
     const groups = [
