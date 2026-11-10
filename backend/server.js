@@ -27,13 +27,13 @@ const sendError = (res, error, message = "Terjadi kesalahan pada server") => {
 };
 
 function prepareDuplicateFields(resource, body) {
-  if (resource === "customers") {
+  if (resource === "customers" && Object.prototype.hasOwnProperty.call(body, "phone")) {
     body.phone_normalized = body.phone ? String(body.phone).replace(/\\D/g, "") || null : null;
   }
-  if (resource === "kendaraan") {
+  if (resource === "kendaraan" && Object.prototype.hasOwnProperty.call(body, "plat_nomer")) {
     body.plat_normalized = String(body.plat_nomer || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   }
-  if (resource === "service") {
+  if (resource === "service" && Object.prototype.hasOwnProperty.call(body, "description")) {
     body.description_hash = crypto.createHash("sha256")
       .update(String(body.description || "").trim().toLowerCase())
       .digest("hex");
@@ -391,7 +391,7 @@ for (const [resource, config] of Object.entries(resources)) {
 
   app.put(`/api/${resource}/:id`, async (req, res) => {
     try {
-      const body = req.body || {};
+      const body = prepareDuplicateFields(resource, { ...(req.body || {}) });
       const columns = config.columns.filter((field) =>
         body[field] !== undefined &&
         !(resource === "transactions" && field === "transactions_date" && body[field] === "")
