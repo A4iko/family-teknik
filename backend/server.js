@@ -259,7 +259,7 @@ async function findDuplicate(resource, body, excludeId = null) {
   const valuesFor = (values) => excludeId ? [...values, excludeId] : values;
 
   if (resource === "customers" && body.phone) {
-    const phone = String(body.phone).replace(/\\D/g, "");
+    const phone = String(body.phone).replace(/\D/g, "");
     if (phone) {
       const rows = await runQuery(
         "SELECT id FROM customers WHERE phone_normalized = ?"+skip+" LIMIT 1",
