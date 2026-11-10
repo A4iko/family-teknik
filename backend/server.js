@@ -26,6 +26,21 @@ const sendError = (res, error, message = "Terjadi kesalahan pada server") => {
   res.status(500).json({ message, error: error.message });
 };
 
+function prepareDuplicateFields(resource, body) {
+  if (resource === "customers" && Object.prototype.hasOwnProperty.call(body, "phone")) {
+    body.phone_normalized = body.phone ? String(body.phone).replace(/\\D/g, "") || null : null;
+  }
+  if (resource === "kendaraan" && Object.prototype.hasOwnProperty.call(body, "plat_nomer")) {
+    body.plat_normalized = String(body.plat_nomer || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  }
+  if (resource === "service" && Object.prototype.hasOwnProperty.call(body, "description")) {
+    body.description_hash = crypto.createHash("sha256")
+      .update(String(body.description || "").trim().toLowerCase())
+      .digest("hex");
+  }
+  return body;
+}
+
 function normalizeFieldValue(resource, field, value) {
   if (value === "") return null;
   if (resource === "transactions" && field === "transactions_date" && typeof value === "string") {
@@ -176,6 +191,26 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.use("/api", requireAuth);
 
+app.get("/api/data-integrity", async (req, res) => {
+  try {
+    const [customers, vehicles, services, transactions] = await Promise.all([
+      runQuery("SELECT REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '') AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM customers WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '') <> '' GROUP BY duplicate_value HAVING COUNT(*) > 1"),
+      runQuery("SELECT UPPER(REGEXP_REPLACE(plat_nomer, '[^A-Z0-9]', '')) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM kendaraan GROUP BY duplicate_value HAVING COUNT(*) > 1"),
+      runQuery("SELECT CONCAT_WS('|', customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM service GROUP BY customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost HAVING COUNT(*) > 1"),
+      runQuery("SELECT service_id AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM transactions WHERE service_id IS NOT NULL GROUP BY service_id HAVING COUNT(*) > 1"),
+    ]);
+    const groups = [
+      ...customers.map(row => ({ type: "Pelanggan", field: "Nomor telepon", ...row })),
+      ...vehicles.map(row => ({ type: "Kendaraan", field: "Nomor polisi", ...row })),
+      ...services.map(row => ({ type: "Servis", field: "Kombinasi data servis", ...row })),
+      ...transactions.map(row => ({ type: "Transaksi", field: "Servis terkait", ...row })),
+    ];
+    res.json({ checked_at: new Date().toISOString(), duplicate_groups: groups.length, duplicate_records: groups.reduce((sum, group) => sum + Number(group.total), 0), groups });
+  } catch (error) {
+    sendError(res, error, "Gagal memeriksa data ganda. Pastikan migrasi keamanan data sudah dijalankan.");
+  }
+});
+
 app.get("/api/dashboard", async (req, res) => {
   try {
     const [customers, vehicles, services, transactions, revenue] = await Promise.all([
@@ -200,19 +235,19 @@ app.get("/api/dashboard", async (req, res) => {
 const resources = {
   customers: {
     table: "customers",
-    columns: ["name", "phone", "address"],
+    columns: ["name", "phone", "phone_normalized", "address"],
     required: ["name"],
     order: "id DESC",
   },
   kendaraan: {
     table: "kendaraan",
-    columns: ["customers_id", "plat_nomer", "brand", "tipe", "year"],
+    columns: ["customers_id", "plat_nomer", "plat_normalized", "brand", "tipe", "year"],
     required: ["customers_id", "plat_nomer", "brand", "tipe"],
     order: "id DESC",
   },
   service: {
     table: "service",
-    columns: ["customers_id", "kendaraan_id", "service_date", "description", "service_cost"],
+    columns: ["customers_id", "kendaraan_id", "service_date", "description", "description_hash", "service_cost"],
     required: ["customers_id", "kendaraan_id", "service_date", "description"],
     order: "service_date DESC, id DESC",
   },
@@ -223,6 +258,65 @@ const resources = {
     order: "transactions_date DESC, id DESC",
   },
 };
+
+function duplicateMessage(resource) {
+  const messages = {
+    customers: "Nomor telepon sudah terdaftar pada pelanggan lain.",
+    kendaraan: "Nomor polisi sudah terdaftar. Periksa kembali kendaraan tersebut.",
+    service: "Data servis dengan pelanggan, kendaraan, tanggal, deskripsi, dan biaya yang sama sudah tercatat.",
+    transactions: "Servis tersebut sudah memiliki transaksi. Pilih servis lain atau kosongkan pilihan servis jika transaksi tidak terkait servis."
+  };
+  return messages[resource] || "Data yang sama sudah terdaftar.";
+}
+
+async function findDuplicate(resource, body, excludeId = null) {
+  const skip = excludeId ? " AND id <> ?" : "";
+  const valuesFor = (values) => excludeId ? [...values, excludeId] : values;
+
+  if (resource === "customers" && body.phone) {
+    const phone = String(body.phone).replace(/\D/g, "");
+    if (phone) {
+      const rows = await runQuery(
+        "SELECT id FROM customers WHERE phone_normalized = ?"+skip+" LIMIT 1",
+        valuesFor([phone])
+      );
+      if (rows.length) return duplicateMessage(resource);
+    }
+  }
+
+  if (resource === "kendaraan" && body.plat_nomer) {
+    const plate = String(body.plat_normalized || "");
+    const rows = await runQuery(
+      "SELECT id FROM kendaraan WHERE plat_normalized = ?"+skip+" LIMIT 1",
+      valuesFor([plate])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+
+  if (resource === "service") {
+    const rows = await runQuery(
+      "SELECT id FROM service WHERE customers_id = ? AND kendaraan_id = ? AND service_date = ? AND description_hash = ? AND service_cost = ?"+skip+" LIMIT 1",
+      valuesFor([body.customers_id, body.kendaraan_id, body.service_date, body.description_hash, body.service_cost ?? 0])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+
+  if (resource === "transactions" && body.service_id) {
+    const rows = await runQuery(
+      "SELECT id FROM transactions WHERE service_id = ?"+skip+" LIMIT 1",
+      valuesFor([body.service_id])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+  return null;
+}
+
+function handleDuplicateError(res, error, resource) {
+  if (error.code === "ER_DUP_ENTRY") {
+    return res.status(409).json({ message: duplicateMessage(resource), code: "DUPLICATE_DATA" });
+  }
+  return null;
+}
 
 async function validateRelations(resource, body) {
   if (resource === "kendaraan") {
@@ -271,11 +365,13 @@ for (const [resource, config] of Object.entries(resources)) {
 
   app.post(`/api/${resource}`, async (req, res) => {
     try {
-      const body = req.body || {};
+      const body = prepareDuplicateFields(resource, { ...(req.body || {}) });
       const missing = config.required.filter((field) => body[field] === undefined || body[field] === null || body[field] === "");
       if (missing.length) return res.status(400).json({ message: `Kolom wajib diisi: ${missing.join(", ")}` });
       const relationError = await validateRelations(resource, body);
       if (relationError) return res.status(400).json({ message: relationError });
+      const duplicateError = await findDuplicate(resource, body);
+      if (duplicateError) return res.status(409).json({ message: duplicateError, code: "DUPLICATE_DATA" });
       const columns = config.columns.filter((field) =>
         body[field] !== undefined &&
         !(resource === "transactions" && field === "transactions_date" && body[field] === "")
@@ -288,13 +384,14 @@ for (const [resource, config] of Object.entries(resources)) {
       );
       res.status(201).json({ message: "Data berhasil ditambahkan", id: result.insertId });
     } catch (error) {
+      if (handleDuplicateError(res, error, resource)) return;
       sendError(res, error, `Gagal menambahkan data ${resource}`);
     }
   });
 
   app.put(`/api/${resource}/:id`, async (req, res) => {
     try {
-      const body = req.body || {};
+      const body = prepareDuplicateFields(resource, { ...(req.body || {}) });
       const columns = config.columns.filter((field) =>
         body[field] !== undefined &&
         !(resource === "transactions" && field === "transactions_date" && body[field] === "")
@@ -302,9 +399,11 @@ for (const [resource, config] of Object.entries(resources)) {
       if (!columns.length) return res.status(400).json({ message: "Tidak ada data yang diperbarui" });
       const [existingRows] = await dbRfm.query(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
       if (!existingRows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-      const mergedBody = { ...existingRows[0], ...body };
+      const mergedBody = prepareDuplicateFields(resource, { ...existingRows[0], ...body });
       const relationError = await validateRelations(resource, mergedBody);
       if (relationError) return res.status(400).json({ message: relationError });
+      const duplicateError = await findDuplicate(resource, mergedBody, Number(req.params.id));
+      if (duplicateError) return res.status(409).json({ message: duplicateError, code: "DUPLICATE_DATA" });
       const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
       await runQuery(
         `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
@@ -312,6 +411,7 @@ for (const [resource, config] of Object.entries(resources)) {
       );
       res.json({ message: "Data berhasil diperbarui" });
     } catch (error) {
+      if (handleDuplicateError(res, error, resource)) return;
       sendError(res, error, `Gagal memperbarui data ${resource}`);
     }
   });

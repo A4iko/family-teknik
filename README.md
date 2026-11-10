@@ -12,7 +12,7 @@ Sistem manajemen bengkel dengan pencatatan pelanggan, kendaraan, servis, transak
 1. Jalankan MySQL dari XAMPP.
 2. Buka phpMyAdmin di http://localhost/phpmyadmin.
 3. Import file database/schema.sql.
-4. Pastikan database family_teknik beserta tabel customers, kendaraan, service, transactions, users, dan login_logs terbentuk. Jika database sudah ada, jalankan ulang schema.sql untuk menambahkan tabel autentikasi. Perintah CREATE TABLE IF NOT EXISTS tidak menghapus data lama.
+4. Pastikan database family_teknik beserta tabel customers, kendaraan, service, transactions, users, dan login_logs terbentuk. Jika database lama sudah ada, jalankan database/migrations/20261110_prevent_duplicate_data.sql satu kali setelah meninjau hasil query audit dan menyelesaikan data ganda yang sudah ada. Jangan jalankan migrasi sebelum hasil audit kosong. Untuk instalasi baru, schema.sql sudah berisi batasan unik tersebut.
 
 Port MySQL bawaan pada konfigurasi proyek adalah 3306. Jika MySQL Anda berjalan pada port lain, ubah DB_PORT pada backend/.env. Isi SESSION_SECRET pada backend/.env dengan string acak minimal 32 karakter agar sesi tetap berlaku setelah backend dimulai ulang.
 
@@ -48,6 +48,9 @@ Buka alamat lokal yang muncul, biasanya http://localhost:5173.
 - CRUD pelanggan, kendaraan, servis, dan transaksi.
 - Riwayat transaksi per pelanggan melalui API.
 - Perhitungan RFM dan rekomendasi promo dari layanan AI.
+- Pencegahan data ganda pada nomor telepon, nomor polisi, catatan servis, dan transaksi.
+- Menu Keamanan Data untuk memindai kelompok data ganda yang sudah tersimpan.
+- Endpoint GET /api/data-integrity untuk laporan integritas data.
 
 ## Endpoint utama
 - GET /api/health
@@ -58,6 +61,7 @@ Buka alamat lokal yang muncul, biasanya http://localhost:5173.
 - GET, POST, PUT, DELETE /api/transactions
 - GET /api/customer-history/:id
 - POST /api/rfm/:customers_id
+- GET /api/data-integrity
 
 ## Catatan
 Gunakan data uji terlebih dahulu. Jangan menghapus pelanggan atau kendaraan yang sudah memiliki transaksi terkait karena relasi database melindungi riwayat transaksi.
