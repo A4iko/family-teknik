@@ -35,6 +35,11 @@ VEHICLE_ID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/k
   -H "Content-Type: application/json" \
   -d "{\"customers_id\":$CUSTOMER_ID,\"plat_nomer\":\"B 1234 TEST\",\"brand\":\"Honda\",\"tipe\":\"Vario\",\"year\":2022}" | jq -r '.id')
 
+DUPLICATE_VEHICLE_STATUS=$(curl -sS -o /tmp/family-duplicate-vehicle.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/kendaraan" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"customers_id\\":$CUSTOMER_ID,\\"plat_nomer\\":\\"b-1234 test\\",\\"brand\\":\\"Honda\\",\\"tipe\\":\\"Vario\\"}")
+if [ "$DUPLICATE_VEHICLE_STATUS" != "409" ]; then echo "Nomor polisi ganda tidak ditolak"; cat /tmp/family-duplicate-vehicle.json; exit 1; fi
+
 BAD_STATUS=$(curl -sS -o /tmp/family-invalid-relation.json -H "Authorization: Bearer $TOKEN" -w '%{http_code}' \
   -X POST "$API_URL/api/service" -H "Content-Type: application/json" \
   -d "{\"customers_id\":$SECOND_CUSTOMER_ID,\"kendaraan_id\":$VEHICLE_ID,\"service_date\":\"$(date +%F)\",\"description\":\"Relasi tidak valid\",\"service_cost\":100000}")
@@ -48,10 +53,22 @@ SERVICE_ID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/s
   -H "Content-Type: application/json" \
   -d "{\"customers_id\":$CUSTOMER_ID,\"kendaraan_id\":$VEHICLE_ID,\"service_date\":\"$(date +%F)\",\"description\":\"Ganti oli\",\"service_cost\":150000}" | jq -r '.id')
 
+DUPLICATE_SERVICE_STATUS=$(curl -sS -o /tmp/family-duplicate-service.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/service" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"customers_id\\":$CUSTOMER_ID,\\"kendaraan_id\\":$VEHICLE_ID,\\"service_date\\":\\"$(date +%F)\\",\\"description\\":\\"  GANTI OLI  \\",\\"service_cost\\":150000}")
+if [ "$DUPLICATE_SERVICE_STATUS" != "409" ]; then echo "Catatan servis ganda tidak ditolak"; cat /tmp/family-duplicate-service.json; exit 1; fi
+
 TRANSACTION_DATE=$(date +%Y-%m-%dT%H:%M)
 TRANSACTION_ID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/transactions" \
   -H "Content-Type: application/json" \
   -d "{\"customers_id\":$CUSTOMER_ID,\"kendaraan_id\":$VEHICLE_ID,\"service_id\":$SERVICE_ID,\"total_amount\":150000,\"transactions_date\":\"$TRANSACTION_DATE\"}" | jq -r '.id')
+
+DUPLICATE_TRANSACTION_STATUS=$(curl -sS -o /tmp/family-duplicate-transaction.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/transactions" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"customers_id\\":$CUSTOMER_ID,\\"kendaraan_id\\":$VEHICLE_ID,\\"service_id\\":$SERVICE_ID,\\"total_amount\\":150000}")
+if [ "$DUPLICATE_TRANSACTION_STATUS" != "409" ]; then echo "Transaksi ganda untuk servis yang sama tidak ditolak"; cat /tmp/family-duplicate-transaction.json; exit 1; fi
+
+curl -fsS -H "Authorization: Bearer $TOKEN" "$API_URL/api/data-integrity" | jq -e '.duplicate_groups == 0 and .duplicate_records == 0' >/dev/null
 
 curl -fsS -H "Authorization: Bearer $TOKEN" -X PUT "$API_URL/api/transactions/$TRANSACTION_ID" \
   -H "Content-Type: application/json" \
@@ -68,4 +85,4 @@ curl -fsS -H "Authorization: Bearer $TOKEN" -X DELETE "$API_URL/api/customers/$S
 curl -fsS -H "Authorization: Bearer $TOKEN" -X DELETE "$API_URL/api/customers/$CUSTOMER_ID" >/dev/null
 
 curl -fsS -H "Authorization: Bearer $TOKEN" "$API_URL/api/dashboard" | jq -e '.customers == 0 and .vehicles == 0 and .services == 0 and .transactions == 0' >/dev/null
-echo "LULUS: CRUD, validasi relasi, riwayat transaksi, dashboard, dan integrasi RFM."
+echo "LULUS: CRUD, validasi relasi, pencegahan data ganda, pemeriksaan integritas, riwayat transaksi, dashboard, dan integrasi RFM."
