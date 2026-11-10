@@ -11,7 +11,7 @@ const dbRfm = mysql.createPool({
   connectionLimit: 5,
   queueLimit: 0,
   dateStrings: true,
-  ssl: process.env.DB_SSL === "true" ? {} : undefined,
+  ssl: process.env.DB_SSL === "true" ? { minVersion: "TLSv1.2" } : undefined,
 });
 
 module.exports = dbRfm;
