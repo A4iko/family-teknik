@@ -40,9 +40,8 @@ VEHICLE_ID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/k
   -H "Content-Type: application/json" \
   -d "{\"customers_id\":$CUSTOMER_ID,\"plat_nomer\":\"B 1234 TEST\",\"brand\":\"Honda\",\"tipe\":\"Vario\",\"year\":2022}" | jq -r '.id')
 
-DUPLICATE_VEHICLE_STATUS=$(curl -sS -o /tmp/family-duplicate-vehicle.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/kendaraan" \
-  -H "Content-Type: application/json" \
-  -d "{\\"customers_id\\":$CUSTOMER_ID,\\"plat_nomer\\":\\"b-1234 test\\",\\"brand\\":\\"Honda\\",\\"tipe\\":\\"Vario\\"}")
+DUPLICATE_VEHICLE_PAYLOAD=$(jq -nc --argjson customer "$CUSTOMER_ID" '{customers_id:$customer,plat_nomer:"b-1234 test",brand:"Honda",tipe:"Vario"}')
+DUPLICATE_VEHICLE_STATUS=$(curl -sS -o /tmp/family-duplicate-vehicle.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/kendaraan" -H "Content-Type: application/json" -d "$DUPLICATE_VEHICLE_PAYLOAD")
 if [ "$DUPLICATE_VEHICLE_STATUS" != "409" ]; then echo "Nomor polisi ganda tidak ditolak"; cat /tmp/family-duplicate-vehicle.json; exit 1; fi
 
 BAD_STATUS=$(curl -sS -o /tmp/family-invalid-relation.json -H "Authorization: Bearer $TOKEN" -w '%{http_code}' \
@@ -58,9 +57,8 @@ SERVICE_ID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/s
   -H "Content-Type: application/json" \
   -d "{\"customers_id\":$CUSTOMER_ID,\"kendaraan_id\":$VEHICLE_ID,\"service_date\":\"$(date +%F)\",\"description\":\"Ganti oli\",\"service_cost\":150000}" | jq -r '.id')
 
-DUPLICATE_SERVICE_STATUS=$(curl -sS -o /tmp/family-duplicate-service.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/service" \
-  -H "Content-Type: application/json" \
-  -d "{\\"customers_id\\":$CUSTOMER_ID,\\"kendaraan_id\\":$VEHICLE_ID,\\"service_date\\":\\"$(date +%F)\\",\\"description\\":\\"  GANTI OLI  \\",\\"service_cost\\":150000}")
+DUPLICATE_SERVICE_PAYLOAD=$(jq -nc --argjson customer "$CUSTOMER_ID" --argjson vehicle "$VEHICLE_ID" --arg date "$(date +%F)" '{customers_id:$customer,kendaraan_id:$vehicle,service_date:$date,description:"  GANTI OLI  ",service_cost:150000}')
+DUPLICATE_SERVICE_STATUS=$(curl -sS -o /tmp/family-duplicate-service.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/service" -H "Content-Type: application/json" -d "$DUPLICATE_SERVICE_PAYLOAD")
 if [ "$DUPLICATE_SERVICE_STATUS" != "409" ]; then echo "Catatan servis ganda tidak ditolak"; cat /tmp/family-duplicate-service.json; exit 1; fi
 
 TRANSACTION_DATE=$(date +%Y-%m-%dT%H:%M)
@@ -68,9 +66,8 @@ TRANSACTION_ID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/a
   -H "Content-Type: application/json" \
   -d "{\"customers_id\":$CUSTOMER_ID,\"kendaraan_id\":$VEHICLE_ID,\"service_id\":$SERVICE_ID,\"total_amount\":150000,\"transactions_date\":\"$TRANSACTION_DATE\"}" | jq -r '.id')
 
-DUPLICATE_TRANSACTION_STATUS=$(curl -sS -o /tmp/family-duplicate-transaction.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/transactions" \
-  -H "Content-Type: application/json" \
-  -d "{\\"customers_id\\":$CUSTOMER_ID,\\"kendaraan_id\\":$VEHICLE_ID,\\"service_id\\":$SERVICE_ID,\\"total_amount\\":150000}")
+DUPLICATE_TRANSACTION_PAYLOAD=$(jq -nc --argjson customer "$CUSTOMER_ID" --argjson vehicle "$VEHICLE_ID" --argjson service "$SERVICE_ID" '{customers_id:$customer,kendaraan_id:$vehicle,service_id:$service,total_amount:150000}')
+DUPLICATE_TRANSACTION_STATUS=$(curl -sS -o /tmp/family-duplicate-transaction.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -X POST "$API_URL/api/transactions" -H "Content-Type: application/json" -d "$DUPLICATE_TRANSACTION_PAYLOAD")
 if [ "$DUPLICATE_TRANSACTION_STATUS" != "409" ]; then echo "Transaksi ganda untuk servis yang sama tidak ditolak"; cat /tmp/family-duplicate-transaction.json; exit 1; fi
 
 curl -fsS -H "Authorization: Bearer $TOKEN" "$API_URL/api/data-integrity" | jq -e '.duplicate_groups == 0 and .duplicate_records == 0' >/dev/null
