@@ -23,6 +23,7 @@ const menus = [
   ['service', 'Servis'],
   ['transactions', 'Transaksi'],
   ['rfm', 'Analisis RFM'],
+  ['integrity', 'Keamanan Data'],
 ]
 
 const definitions = {
@@ -52,6 +53,8 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [rfmResult, setRfmResult] = useState(null)
   const [rfmCustomer, setRfmCustomer] = useState('')
+  const [integrityReport, setIntegrityReport] = useState(null)
+  const [integrityLoading, setIntegrityLoading] = useState(false)
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('ft_token') || '')
   const [authUser, setAuthUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem('ft_user') || 'null') } catch { return null }
@@ -151,6 +154,19 @@ function App() {
     } catch (e) { setNotice(e.message) }
   }
 
+  const runIntegrityCheck = async () => {
+    setIntegrityLoading(true)
+    setIntegrityReport(null)
+    try {
+      const response = await apiFetch('/api/data-integrity')
+      setIntegrityReport(await check(response))
+    } catch (e) {
+      setNotice(e.message)
+    } finally {
+      setIntegrityLoading(false)
+    }
+  }
+
   const runRfm = async () => {
     if (!rfmCustomer) return
     setRfmResult(null)
@@ -187,7 +203,7 @@ function App() {
       <div className="sidebar-foot"><span className="status-dot" /> Sistem Manajemen Bengkel</div>
     </aside>
     <main className="main">
-      <header className="topbar"><div><span className="eyebrow">FAMILY TEKNIK / MANAGEMENT</span><h1>{active === 'dashboard' ? 'Dashboard' : active === 'rfm' ? 'Analisis Pelanggan RFM' : current.title}</h1></div><div className="topbar-actions"><span className="user-label">{authUser?.full_name || authUser?.username || 'Admin'}</span><button className="button secondary" onClick={load}>Perbarui data</button><button className="button logout-button" onClick={logout}>Keluar</button></div></header>
+      <header className="topbar"><div><span className="eyebrow">FAMILY TEKNIK / MANAGEMENT</span><h1>{active === 'dashboard' ? 'Dashboard' : active === 'rfm' ? 'Analisis Pelanggan RFM' : active === 'integrity' ? 'Pemeriksaan Keamanan Data' : current.title}</h1></div><div className="topbar-actions"><span className="user-label">{authUser?.full_name || authUser?.username || 'Admin'}</span><button className="button secondary" onClick={load}>Perbarui data</button><button className="button logout-button" onClick={logout}>Keluar</button></div></header>
       {error && <div className="alert error">{error}</div>}
       {notice && <div className="alert">{notice}</div>}
       {loading && <p className="muted">Memuat data...</p>}
@@ -219,6 +235,23 @@ function App() {
             <div className="form-actions"><button className="button primary" disabled={saving}>{saving ? 'Menyimpan...' : editId ? 'Simpan perubahan' : 'Simpan data'}</button>{editId && <button type="button" className="button secondary" onClick={() => { setEditId(null); setForm({}); setNotice('Edit dibatalkan.') }}>Batal edit</button>}</div>
           </form>
         </Panel>
+      </section>}
+      {!loading && active === 'integrity' && <section className="rfm-layout">
+        <Panel title="Pemeriksaan data ganda" subtitle="Periksa data pelanggan, kendaraan, servis, dan transaksi di database">
+          <p className="muted">Sistem membandingkan nomor telepon, nomor polisi, kombinasi catatan servis, dan hubungan transaksi dengan servis.</p>
+          <button className="button primary" onClick={runIntegrityCheck} disabled={integrityLoading}>{integrityLoading ? 'Memeriksa database...' : 'Periksa database sekarang'}</button>
+          {integrityReport && <div className="integrity-results">
+            <div className="rfm-stats">
+              <div><span>Kelompok duplikasi</span><strong>{integrityReport.duplicate_groups}</strong></div>
+              <div><span>Catatan terindikasi</span><strong>{integrityReport.duplicate_records}</strong></div>
+              <div><span>Status</span><strong>{integrityReport.duplicate_groups === 0 ? 'Bersih' : 'Perlu ditinjau'}</strong></div>
+            </div>
+            {integrityReport.groups.length === 0
+              ? <div className="alert">Tidak ditemukan data ganda berdasarkan aturan pemeriksaan.</div>
+              : <div className="table-wrap"><table><thead><tr><th>Jenis data</th><th>Aturan</th><th>ID data</th><th>Jumlah</th></tr></thead><tbody>{integrityReport.groups.map((group, index) => <tr key={group.type + index}><td>{group.type}</td><td>{group.field}</td><td>{group.record_ids}</td><td>{group.total}</td></tr>)}</tbody></table></div>}
+          </div>}
+        </Panel>
+        <div className="info-note"><strong>Perlindungan saat penyimpanan</strong><p>Data yang melanggar aturan duplikasi akan ditolak. Database juga menerapkan indeks unik untuk mencegah data ganda masuk melalui proses penyimpanan bersamaan.</p></div>
       </section>}
       {!loading && active === 'rfm' && <section className="rfm-layout">
         <Panel title="Hitung segmentasi pelanggan" subtitle="Pilih pelanggan untuk menghitung Recency, Frequency, dan Monetary">
