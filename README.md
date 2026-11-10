@@ -14,7 +14,7 @@ Sistem manajemen bengkel dengan pencatatan pelanggan, kendaraan, servis, transak
 3. Import file database/schema.sql.
 4. Pastikan database family_teknik beserta tabel customers, kendaraan, service, transactions, users, dan login_logs terbentuk. Jika database sudah ada, jalankan ulang schema.sql untuk menambahkan tabel autentikasi. Perintah CREATE TABLE IF NOT EXISTS tidak menghapus data lama.
 
-Port MySQL bawaan pada konfigurasi proyek adalah 3306. Jika MySQL Anda berjalan pada port lain, ubah DB_PORT pada backend/.env.
+Port MySQL bawaan pada konfigurasi proyek adalah 3306. Jika MySQL Anda berjalan pada port lain, ubah DB_PORT pada backend/.env. Isi SESSION_SECRET pada backend/.env dengan string acak minimal 32 karakter agar sesi tetap berlaku setelah backend dimulai ulang.
 
 ## 2. Jalankan backend
 Buka terminal pada folder backend:
