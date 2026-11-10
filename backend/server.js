@@ -2,15 +2,20 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
+const crypto = require("crypto");
+const { promisify } = require("util");
 const db = require("./db");
 const dbRfm = require("./db_rfm");
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
 const AI_URL = process.env.AI_URL || "http://127.0.0.1:5001";
+const scrypt = promisify(crypto.scrypt);
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+const SESSION_DURATION = 8 * 60 * 60;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 const runQuery = (sql, values = []) => new Promise((resolve, reject) => {
   db.query(sql, values, (error, results) => error ? reject(error) : resolve(results));
@@ -29,6 +34,65 @@ function normalizeFieldValue(resource, field, value) {
   return value;
 }
 
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derived = await scrypt(password, salt, 64);
+  return `scrypt:${salt}:${derived.toString("hex")}`;
+}
+
+async function verifyPassword(password, storedHash) {
+  const [algorithm, salt, storedKey] = String(storedHash || "").split(":");
+  if (algorithm !== "scrypt" || !salt || !storedKey) return false;
+  const derived = await scrypt(password, salt, 64);
+  const expected = Buffer.from(storedKey, "hex");
+  return expected.length === derived.length && crypto.timingSafeEqual(expected, derived);
+}
+
+function signToken(user) {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    sub: user.id,
+    username: user.username,
+    full_name: user.full_name,
+    exp: Math.floor(Date.now() / 1000) + SESSION_DURATION,
+  })).toString("base64url");
+  const input = header + "." + payload;
+  const signature = crypto.createHmac("sha256", SESSION_SECRET).update(input).digest("base64url");
+  return input + "." + signature;
+}
+
+function verifyToken(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) return null;
+  const input = parts[0] + "." + parts[1];
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(input).digest();
+  const received = Buffer.from(parts[2], "base64url");
+  if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    if (!payload.sub || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLoginLog(req, userId, username, status) {
+  await runQuery(
+    "INSERT INTO login_logs (user_id, username, login_status, ip_address, user_agent) VALUES (?, ?, ?, ?, ?)",
+    [userId || null, username, status, req.ip || null, String(req.get("user-agent") || "").slice(0, 255)]
+  );
+}
+
+function requireAuth(req, res, next) {
+  const authorization = req.get("authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const user = verifyToken(token);
+  if (!user) return res.status(401).json({ message: "Sesi berakhir. Silakan login kembali." });
+  req.user = user;
+  next();
+}
+
 app.get("/", (req, res) => res.json({ message: "Backend Family Teknik berjalan" }));
 app.get("/api/health", async (req, res) => {
   try {
@@ -38,6 +102,79 @@ app.get("/api/health", async (req, res) => {
     sendError(res, error, "Backend aktif, tetapi database belum terhubung");
   }
 });
+
+app.get("/api/auth/status", async (req, res) => {
+  try {
+    const [rows] = await dbRfm.query("SELECT COUNT(*) AS total FROM users");
+    res.json({ setup_required: Number(rows[0].total) === 0 });
+  } catch (error) {
+    sendError(res, error, "Gagal memeriksa status akun");
+  }
+});
+
+app.post("/api/auth/setup", async (req, res) => {
+  const fullName = String(req.body?.full_name || "").trim();
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (fullName.length < 2 || fullName.length > 120) {
+    return res.status(400).json({ message: "Nama lengkap harus berisi 2 sampai 120 karakter." });
+  }
+  if (!/^[a-z0-9._-]{4,60}$/.test(username)) {
+    return res.status(400).json({ message: "Username harus 4 sampai 60 karakter, gunakan huruf kecil, angka, titik, garis bawah, atau tanda hubung." });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ message: "Password minimal 8 karakter." });
+  }
+
+  let connection;
+  try {
+    connection = await dbRfm.getConnection();
+    await connection.beginTransaction();
+    const [existing] = await connection.query("SELECT id FROM users LIMIT 1 FOR UPDATE");
+    if (existing.length) {
+      await connection.rollback();
+      return res.status(409).json({ message: "Akun admin sudah dibuat. Silakan login." });
+    }
+    const passwordHash = await hashPassword(password);
+    const [result] = await connection.query(
+      "INSERT INTO users (full_name, username, password_hash) VALUES (?, ?, ?)",
+      [fullName, username, passwordHash]
+    );
+    await connection.commit();
+    const user = { id: result.insertId, full_name: fullName, username };
+    await writeLoginLog(req, user.id, username, "success");
+    res.status(201).json({ message: "Akun admin berhasil dibuat.", token: signToken(user), user });
+  } catch (error) {
+    if (connection) await connection.rollback().catch(() => {});
+    if (error.code === "ER_DUP_ENTRY") return res.status(409).json({ message: "Username sudah digunakan." });
+    sendError(res, error, "Gagal membuat akun admin");
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (!username || !password) return res.status(400).json({ message: "Username dan password wajib diisi." });
+  try {
+    const [rows] = await dbRfm.query(
+      "SELECT id, full_name, username, password_hash FROM users WHERE username = ? LIMIT 1",
+      [username]
+    );
+    const user = rows[0];
+    const valid = user ? await verifyPassword(password, user.password_hash) : false;
+    await writeLoginLog(req, user?.id, username, valid ? "success" : "failed");
+    if (!valid) return res.status(401).json({ message: "Username atau password salah." });
+    await dbRfm.query("UPDATE users SET last_login_at = NOW() WHERE id = ?", [user.id]);
+    const publicUser = { id: user.id, full_name: user.full_name, username: user.username };
+    res.json({ message: "Login berhasil.", token: signToken(publicUser), user: publicUser });
+  } catch (error) {
+    sendError(res, error, "Gagal memproses login");
+  }
+});
+
+app.use("/api", requireAuth);
 
 app.get("/api/dashboard", async (req, res) => {
   try {
@@ -169,7 +306,7 @@ for (const [resource, config] of Object.entries(resources)) {
       const relationError = await validateRelations(resource, mergedBody);
       if (relationError) return res.status(400).json({ message: relationError });
       const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
-      const result = await runQuery(
+      await runQuery(
         `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
         [...values, req.params.id]
       );

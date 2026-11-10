@@ -12,9 +12,9 @@ Sistem manajemen bengkel dengan pencatatan pelanggan, kendaraan, servis, transak
 1. Jalankan MySQL dari XAMPP.
 2. Buka phpMyAdmin di http://localhost/phpmyadmin.
 3. Import file database/schema.sql.
-4. Pastikan database family_teknik dan tabel customers, kendaraan, service, transactions terbentuk.
+4. Pastikan database family_teknik beserta tabel customers, kendaraan, service, transactions, users, dan login_logs terbentuk. Jika database sudah ada, jalankan ulang schema.sql untuk menambahkan tabel autentikasi. Perintah CREATE TABLE IF NOT EXISTS tidak menghapus data lama.
 
-Port MySQL bawaan pada konfigurasi proyek adalah 3306. Jika MySQL Anda berjalan pada port lain, ubah DB_PORT pada backend/.env.
+Port MySQL bawaan pada konfigurasi proyek adalah 3306. Jika MySQL Anda berjalan pada port lain, ubah DB_PORT pada backend/.env. Isi SESSION_SECRET pada backend/.env dengan string acak minimal 32 karakter agar sesi tetap berlaku setelah backend dimulai ulang.
 
 ## 2. Jalankan backend
 Buka terminal pada folder backend:
@@ -44,7 +44,7 @@ npm run dev
 Buka alamat lokal yang muncul, biasanya http://localhost:5173.
 
 ## Fitur
-- Dashboard jumlah pelanggan, kendaraan, servis, transaksi, dan pendapatan.
+- Login administrator dengan pembuatan akun admin pertama kali.\n- Password disimpan sebagai hash scrypt, bukan teks biasa.\n- Riwayat login berhasil dan gagal tersimpan pada tabel login_logs.\n- Endpoint data bengkel memerlukan token login.\n- Dashboard jumlah pelanggan, kendaraan, servis, transaksi, dan pendapatan.
 - CRUD pelanggan, kendaraan, servis, dan transaksi.
 - Riwayat transaksi per pelanggan melalui API.
 - Perhitungan RFM dan rekomendasi promo dari layanan AI.
