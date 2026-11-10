@@ -176,6 +176,26 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.use("/api", requireAuth);
 
+app.get("/api/data-integrity", async (req, res) => {
+  try {
+    const [customers, vehicles, services, transactions] = await Promise.all([
+      runQuery("SELECT phone_normalized AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM customers WHERE phone_normalized IS NOT NULL GROUP BY phone_normalized HAVING COUNT(*) > 1"),
+      runQuery("SELECT plat_normalized AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM kendaraan GROUP BY plat_normalized HAVING COUNT(*) > 1"),
+      runQuery("SELECT duplicate_key AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM service GROUP BY duplicate_key HAVING COUNT(*) > 1"),
+      runQuery("SELECT service_id AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM transactions WHERE service_id IS NOT NULL GROUP BY service_id HAVING COUNT(*) > 1"),
+    ]);
+    const groups = [
+      ...customers.map(row => ({ type: "Pelanggan", field: "Nomor telepon", ...row })),
+      ...vehicles.map(row => ({ type: "Kendaraan", field: "Nomor polisi", ...row })),
+      ...services.map(row => ({ type: "Servis", field: "Kombinasi data servis", ...row })),
+      ...transactions.map(row => ({ type: "Transaksi", field: "Servis terkait", ...row })),
+    ];
+    res.json({ checked_at: new Date().toISOString(), duplicate_groups: groups.length, duplicate_records: groups.reduce((sum, group) => sum + Number(group.total), 0), groups });
+  } catch (error) {
+    sendError(res, error, "Gagal memeriksa data ganda. Pastikan migrasi keamanan data sudah dijalankan.");
+  }
+});
+
 app.get("/api/dashboard", async (req, res) => {
   try {
     const [customers, vehicles, services, transactions, revenue] = await Promise.all([
@@ -223,6 +243,65 @@ const resources = {
     order: "transactions_date DESC, id DESC",
   },
 };
+
+function duplicateMessage(resource) {
+  const messages = {
+    customers: "Nomor telepon sudah terdaftar pada pelanggan lain.",
+    kendaraan: "Nomor polisi sudah terdaftar. Periksa kembali kendaraan tersebut.",
+    service: "Data servis dengan pelanggan, kendaraan, tanggal, deskripsi, dan biaya yang sama sudah tercatat.",
+    transactions: "Servis tersebut sudah memiliki transaksi. Pilih servis lain atau kosongkan pilihan servis jika transaksi tidak terkait servis."
+  };
+  return messages[resource] || "Data yang sama sudah terdaftar.";
+}
+
+async function findDuplicate(resource, body, excludeId = null) {
+  const skip = excludeId ? " AND id <> ?" : "";
+  const valuesFor = (values) => excludeId ? [...values, excludeId] : values;
+
+  if (resource === "customers" && body.phone) {
+    const phone = String(body.phone).replace(/\\D/g, "");
+    if (phone) {
+      const rows = await runQuery(
+        "SELECT id FROM customers WHERE phone_normalized = ?"+skip+" LIMIT 1",
+        valuesFor([phone])
+      );
+      if (rows.length) return duplicateMessage(resource);
+    }
+  }
+
+  if (resource === "kendaraan" && body.plat_nomer) {
+    const plate = String(body.plat_nomer).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const rows = await runQuery(
+      "SELECT id FROM kendaraan WHERE plat_normalized = ?"+skip+" LIMIT 1",
+      valuesFor([plate])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+
+  if (resource === "service") {
+    const rows = await runQuery(
+      "SELECT id FROM service WHERE customers_id = ? AND kendaraan_id = ? AND service_date = ? AND LOWER(TRIM(description)) = LOWER(TRIM(?)) AND service_cost = ?"+skip+" LIMIT 1",
+      valuesFor([body.customers_id, body.kendaraan_id, body.service_date, body.description, body.service_cost ?? 0])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+
+  if (resource === "transactions" && body.service_id) {
+    const rows = await runQuery(
+      "SELECT id FROM transactions WHERE service_id = ?"+skip+" LIMIT 1",
+      valuesFor([body.service_id])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+  return null;
+}
+
+function handleDuplicateError(res, error, resource) {
+  if (error.code === "ER_DUP_ENTRY") {
+    return res.status(409).json({ message: duplicateMessage(resource), code: "DUPLICATE_DATA" });
+  }
+  return null;
+}
 
 async function validateRelations(resource, body) {
   if (resource === "kendaraan") {
@@ -276,6 +355,8 @@ for (const [resource, config] of Object.entries(resources)) {
       if (missing.length) return res.status(400).json({ message: `Kolom wajib diisi: ${missing.join(", ")}` });
       const relationError = await validateRelations(resource, body);
       if (relationError) return res.status(400).json({ message: relationError });
+      const duplicateError = await findDuplicate(resource, body);
+      if (duplicateError) return res.status(409).json({ message: duplicateError, code: "DUPLICATE_DATA" });
       const columns = config.columns.filter((field) =>
         body[field] !== undefined &&
         !(resource === "transactions" && field === "transactions_date" && body[field] === "")
@@ -288,6 +369,7 @@ for (const [resource, config] of Object.entries(resources)) {
       );
       res.status(201).json({ message: "Data berhasil ditambahkan", id: result.insertId });
     } catch (error) {
+      if (handleDuplicateError(res, error, resource)) return;
       sendError(res, error, `Gagal menambahkan data ${resource}`);
     }
   });
@@ -305,6 +387,8 @@ for (const [resource, config] of Object.entries(resources)) {
       const mergedBody = { ...existingRows[0], ...body };
       const relationError = await validateRelations(resource, mergedBody);
       if (relationError) return res.status(400).json({ message: relationError });
+      const duplicateError = await findDuplicate(resource, mergedBody, Number(req.params.id));
+      if (duplicateError) return res.status(409).json({ message: duplicateError, code: "DUPLICATE_DATA" });
       const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
       await runQuery(
         `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
@@ -312,6 +396,7 @@ for (const [resource, config] of Object.entries(resources)) {
       );
       res.json({ message: "Data berhasil diperbarui" });
     } catch (error) {
+      if (handleDuplicateError(res, error, resource)) return;
       sendError(res, error, `Gagal memperbarui data ${resource}`);
     }
   });
