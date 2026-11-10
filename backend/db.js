@@ -8,6 +8,7 @@ const db = mysql.createConnection({
   password: process.env.DB_PASSWORD || "",
   database: process.env.DB_NAME || "family_teknik",
   charset: "utf8mb4",
+  ssl: process.env.DB_SSL === "true" ? {} : undefined,
 });
 
 db.connect((error) => {
