@@ -56,6 +56,31 @@ CREATE TABLE IF NOT EXISTS transactions (
   INDEX idx_transaction_date (transactions_date)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS users (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  full_name VARCHAR(120) NOT NULL,
+  username VARCHAR(60) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  last_login_at DATETIME NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_users_username (username)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS login_logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NULL,
+  username VARCHAR(60) NOT NULL,
+  login_status ENUM('success', 'failed') NOT NULL,
+  ip_address VARCHAR(45) NULL,
+  user_agent VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_login_logs_user FOREIGN KEY (user_id)
+    REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  INDEX idx_login_logs_user_date (user_id, created_at),
+  INDEX idx_login_logs_username_date (username, created_at)
+) ENGINE=InnoDB;
+
 -- Data contoh opsional. Hapus komentar untuk mengisi data demo.
 -- INSERT INTO customers (name, phone, address) VALUES
 -- ('Budi Santoso', '081234567890', 'Depok'),
