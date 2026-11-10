@@ -6,21 +6,24 @@ CREATE TABLE IF NOT EXISTS customers (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
   phone VARCHAR(30) NULL,
+  phone_normalized VARCHAR(30) GENERATED ALWAYS AS (NULLIF(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', ''), '')) STORED,
   address TEXT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_customers_phone_normalized (phone_normalized)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS kendaraan (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   customers_id INT UNSIGNED NOT NULL,
   plat_nomer VARCHAR(20) NOT NULL,
+  plat_normalized VARCHAR(20) GENERATED ALWAYS AS (UPPER(REGEXP_REPLACE(plat_nomer, '[^A-Z0-9]', ''))) STORED,
   brand VARCHAR(80) NOT NULL,
   tipe VARCHAR(80) NOT NULL,
   year SMALLINT UNSIGNED NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_kendaraan_customer FOREIGN KEY (customers_id)
     REFERENCES customers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  UNIQUE KEY uq_kendaraan_plat (plat_nomer)
+  UNIQUE KEY uq_kendaraan_plat_normalized (plat_normalized)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS service (
@@ -30,12 +33,14 @@ CREATE TABLE IF NOT EXISTS service (
   service_date DATE NOT NULL,
   description TEXT NOT NULL,
   service_cost DECIMAL(14,2) NOT NULL DEFAULT 0,
+  duplicate_key CHAR(64) GENERATED ALWAYS AS (SHA2(CONCAT_WS('|', customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost), 256)) STORED,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_service_customer FOREIGN KEY (customers_id)
     REFERENCES customers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   CONSTRAINT fk_service_kendaraan FOREIGN KEY (kendaraan_id)
     REFERENCES kendaraan(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  INDEX idx_service_date (service_date)
+  INDEX idx_service_date (service_date),
+  UNIQUE KEY uq_service_duplicate_key (duplicate_key)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -53,7 +58,8 @@ CREATE TABLE IF NOT EXISTS transactions (
   CONSTRAINT fk_transaction_service FOREIGN KEY (service_id)
     REFERENCES service(id) ON UPDATE CASCADE ON DELETE SET NULL,
   INDEX idx_transaction_customer_date (customers_id, transactions_date),
-  INDEX idx_transaction_date (transactions_date)
+  INDEX idx_transaction_date (transactions_date),
+  UNIQUE KEY uq_transaction_service (service_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS users (
