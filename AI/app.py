@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request, jsonify
 from rfm import calculate_rfm
 from recomendation import determine_segment, recommend_promo
@@ -33,4 +34,4 @@ def calculate_customers_rfm():
         return jsonify({"message": "Format transaksi tidak valid", "error": str(error)}), 400
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5001)), debug=False)

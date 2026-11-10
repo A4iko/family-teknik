@@ -65,3 +65,8 @@ Buka alamat lokal yang muncul, biasanya http://localhost:5173.
 
 ## Catatan
 Gunakan data uji terlebih dahulu. Jangan menghapus pelanggan atau kendaraan yang sudah memiliki transaksi terkait karena relasi database melindungi riwayat transaksi.
+
+
+## Deployment cloud gratis
+
+Panduan deployment tersedia pada [DEPLOYMENT.md](DEPLOYMENT.md). Konfigurasi awal Render tersedia pada [render.yaml](render.yaml). Deployment memakai Render untuk frontend, backend, dan AI, serta TiDB Cloud Starter untuk database MySQL-compatible. Perhatikan batas tidur layanan gratis dan kuota database.
