@@ -26,6 +26,21 @@ const sendError = (res, error, message = "Terjadi kesalahan pada server") => {
   res.status(500).json({ message, error: error.message });
 };
 
+function prepareDuplicateFields(resource, body) {
+  if (resource === "customers") {
+    body.phone_normalized = body.phone ? String(body.phone).replace(/\\D/g, "") || null : null;
+  }
+  if (resource === "kendaraan") {
+    body.plat_normalized = String(body.plat_nomer || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  }
+  if (resource === "service") {
+    body.description_hash = crypto.createHash("sha256")
+      .update(String(body.description || "").trim().toLowerCase())
+      .digest("hex");
+  }
+  return body;
+}
+
 function normalizeFieldValue(resource, field, value) {
   if (value === "") return null;
   if (resource === "transactions" && field === "transactions_date" && typeof value === "string") {
@@ -181,7 +196,7 @@ app.get("/api/data-integrity", async (req, res) => {
     const [customers, vehicles, services, transactions] = await Promise.all([
       runQuery("SELECT phone_normalized AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM customers WHERE phone_normalized IS NOT NULL GROUP BY phone_normalized HAVING COUNT(*) > 1"),
       runQuery("SELECT plat_normalized AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM kendaraan GROUP BY plat_normalized HAVING COUNT(*) > 1"),
-      runQuery("SELECT duplicate_key AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM service GROUP BY duplicate_key HAVING COUNT(*) > 1"),
+      runQuery("SELECT CONCAT(customers_id, ':', kendaraan_id, ':', service_date, ':', description_hash, ':', service_cost) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM service GROUP BY customers_id, kendaraan_id, service_date, description_hash, service_cost HAVING COUNT(*) > 1"),
       runQuery("SELECT service_id AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM transactions WHERE service_id IS NOT NULL GROUP BY service_id HAVING COUNT(*) > 1"),
     ]);
     const groups = [
@@ -220,19 +235,19 @@ app.get("/api/dashboard", async (req, res) => {
 const resources = {
   customers: {
     table: "customers",
-    columns: ["name", "phone", "address"],
+    columns: ["name", "phone", "phone_normalized", "address"],
     required: ["name"],
     order: "id DESC",
   },
   kendaraan: {
     table: "kendaraan",
-    columns: ["customers_id", "plat_nomer", "brand", "tipe", "year"],
+    columns: ["customers_id", "plat_nomer", "plat_normalized", "brand", "tipe", "year"],
     required: ["customers_id", "plat_nomer", "brand", "tipe"],
     order: "id DESC",
   },
   service: {
     table: "service",
-    columns: ["customers_id", "kendaraan_id", "service_date", "description", "service_cost"],
+    columns: ["customers_id", "kendaraan_id", "service_date", "description", "description_hash", "service_cost"],
     required: ["customers_id", "kendaraan_id", "service_date", "description"],
     order: "service_date DESC, id DESC",
   },
@@ -270,7 +285,7 @@ async function findDuplicate(resource, body, excludeId = null) {
   }
 
   if (resource === "kendaraan" && body.plat_nomer) {
-    const plate = String(body.plat_nomer).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const plate = String(body.plat_normalized || "");
     const rows = await runQuery(
       "SELECT id FROM kendaraan WHERE plat_normalized = ?"+skip+" LIMIT 1",
       valuesFor([plate])
@@ -280,8 +295,8 @@ async function findDuplicate(resource, body, excludeId = null) {
 
   if (resource === "service") {
     const rows = await runQuery(
-      "SELECT id FROM service WHERE customers_id = ? AND kendaraan_id = ? AND service_date = ? AND LOWER(TRIM(description)) = LOWER(TRIM(?)) AND service_cost = ?"+skip+" LIMIT 1",
-      valuesFor([body.customers_id, body.kendaraan_id, body.service_date, body.description, body.service_cost ?? 0])
+      "SELECT id FROM service WHERE customers_id = ? AND kendaraan_id = ? AND service_date = ? AND description_hash = ? AND service_cost = ?"+skip+" LIMIT 1",
+      valuesFor([body.customers_id, body.kendaraan_id, body.service_date, body.description_hash, body.service_cost ?? 0])
     );
     if (rows.length) return duplicateMessage(resource);
   }
@@ -350,7 +365,7 @@ for (const [resource, config] of Object.entries(resources)) {
 
   app.post(`/api/${resource}`, async (req, res) => {
     try {
-      const body = req.body || {};
+      const body = prepareDuplicateFields(resource, { ...(req.body || {}) });
       const missing = config.required.filter((field) => body[field] === undefined || body[field] === null || body[field] === "");
       if (missing.length) return res.status(400).json({ message: `Kolom wajib diisi: ${missing.join(", ")}` });
       const relationError = await validateRelations(resource, body);
@@ -384,7 +399,7 @@ for (const [resource, config] of Object.entries(resources)) {
       if (!columns.length) return res.status(400).json({ message: "Tidak ada data yang diperbarui" });
       const [existingRows] = await dbRfm.query(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
       if (!existingRows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-      const mergedBody = { ...existingRows[0], ...body };
+      const mergedBody = prepareDuplicateFields(resource, { ...existingRows[0], ...body });
       const relationError = await validateRelations(resource, mergedBody);
       if (relationError) return res.status(400).json({ message: relationError });
       const duplicateError = await findDuplicate(resource, mergedBody, Number(req.params.id));
