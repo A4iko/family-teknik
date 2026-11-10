@@ -38,20 +38,24 @@ HAVING COUNT(*) > 1;
 -- Jalankan bagian berikut setelah empat query audit di atas tidak menghasilkan baris.
 
 ALTER TABLE customers
-  ADD COLUMN phone_normalized VARCHAR(30)
-    GENERATED ALWAYS AS (NULLIF(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', ''), '')) STORED,
-  ADD UNIQUE KEY uq_customers_phone_normalized (phone_normalized);
+  ADD COLUMN phone_normalized VARCHAR(30) NULL;
+UPDATE customers SET phone_normalized = NULLIF(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', ''), '');
+ALTER TABLE customers ADD UNIQUE KEY uq_customers_phone_normalized (phone_normalized);
 
 ALTER TABLE kendaraan
-  ADD COLUMN plat_normalized VARCHAR(20)
-    GENERATED ALWAYS AS (UPPER(REGEXP_REPLACE(plat_nomer, '[^A-Z0-9]', ''))) STORED,
+  ADD COLUMN plat_normalized VARCHAR(20) NULL;
+UPDATE kendaraan SET plat_normalized = UPPER(REGEXP_REPLACE(plat_nomer, '[^A-Z0-9]', ''));
+ALTER TABLE kendaraan
+  MODIFY COLUMN plat_normalized VARCHAR(20) NOT NULL,
   DROP INDEX uq_kendaraan_plat,
   ADD UNIQUE KEY uq_kendaraan_plat_normalized (plat_normalized);
 
 ALTER TABLE service
-  ADD COLUMN duplicate_key CHAR(64)
-    GENERATED ALWAYS AS (SHA2(CONCAT_WS('|', customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost), 256)) STORED,
-  ADD UNIQUE KEY uq_service_duplicate_key (duplicate_key);
+  ADD COLUMN description_hash CHAR(64) NULL;
+UPDATE service SET description_hash = SHA2(LOWER(TRIM(description)), 256);
+ALTER TABLE service
+  MODIFY COLUMN description_hash CHAR(64) NOT NULL,
+  ADD UNIQUE KEY uq_service_duplicate (customers_id, kendaraan_id, service_date, description_hash, service_cost);
 
 ALTER TABLE transactions
   ADD UNIQUE KEY uq_transaction_service (service_id);
