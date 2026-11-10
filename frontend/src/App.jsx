@@ -2,6 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+const apiFetch = (path, options = {}) => {
+  const headers = { ...(options.headers || {}), Authorization: 'Bearer ' + (localStorage.getItem('ft_token') || '') }
+  return fetch(API + path, { ...options, headers }).then(response => {
+    if (response.status === 401) {
+      localStorage.removeItem('ft_token')
+      localStorage.removeItem('ft_user')
+      window.location.reload()
+    }
+    return response
+  })
+}
 const money = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value || 0))
 const dateText = (value) => value ? new Date(value).toLocaleDateString('id-ID') : '-'
 
@@ -41,17 +52,23 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [rfmResult, setRfmResult] = useState(null)
   const [rfmCustomer, setRfmCustomer] = useState('')
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('ft_token') || '')
+  const [authUser, setAuthUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('ft_user') || 'null') } catch { return null }
+  })
+  const [setupRequired, setSetupRequired] = useState(false)
+  const [authChecking, setAuthChecking] = useState(true)
 
   const load = async () => {
     setLoading(true)
     setError('')
     try {
       const [summary, customers, kendaraan, service, transactions] = await Promise.all([
-        fetch(API + '/api/dashboard').then(check),
-        fetch(API + '/api/customers').then(check),
-        fetch(API + '/api/kendaraan').then(check),
-        fetch(API + '/api/service').then(check),
-        fetch(API + '/api/transactions').then(check),
+        apiFetch('/api/dashboard').then(check),
+        apiFetch('/api/customers').then(check),
+        apiFetch('/api/kendaraan').then(check),
+        apiFetch('/api/service').then(check),
+        apiFetch('/api/transactions').then(check),
       ])
       setStats(summary)
       setData({ customers, kendaraan, service, transactions })
@@ -62,7 +79,21 @@ function App() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (authToken) {
+      setAuthChecking(false)
+      return
+    }
+    apiFetch('/api/auth/status')
+      .then(check)
+      .then(result => setSetupRequired(result.setup_required))
+      .catch(e => setError(e.message))
+      .finally(() => setAuthChecking(false))
+  }, [authToken])
+
+  useEffect(() => {
+    if (authToken) load()
+  }, [authToken])
   const current = definitions[active]
   const customerOptions = data.customers.map(x => ({ value: x.id, label: x.name }))
   const vehicleOptions = data.kendaraan
@@ -88,7 +119,7 @@ function App() {
       const payload = { ...form }
       if (payload.year === '') payload.year = null
       if (payload.service_id === '') payload.service_id = null
-      const response = await fetch(API + '/api/' + current.endpoint + (editId ? '/' + editId : ''), {
+      const response = await apiFetch('/api/' + current.endpoint + (editId ? '/' + editId : ''), {
         method: editId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
       })
       await check(response)
@@ -114,7 +145,7 @@ function App() {
   const remove = async (resource, id) => {
     if (!window.confirm('Hapus data ini?')) return
     try {
-      await check(await fetch(API + '/api/' + resource + '/' + id, { method: 'DELETE' }))
+      await check(await apiFetch('/api/' + resource + '/' + id, { method: 'DELETE' }))
       setNotice('Data berhasil dihapus.')
       await load()
     } catch (e) { setNotice(e.message) }
@@ -124,10 +155,29 @@ function App() {
     if (!rfmCustomer) return
     setRfmResult(null)
     try {
-      const response = await fetch(API + '/api/rfm/' + rfmCustomer, { method: 'POST' })
+      const response = await apiFetch('/api/rfm/' + rfmCustomer, { method: 'POST' })
       setRfmResult(await check(response))
     } catch (e) { setRfmResult({ error: e.message }) }
   }
+
+  const handleAuthSuccess = (result) => {
+    localStorage.setItem('ft_token', result.token)
+    localStorage.setItem('ft_user', JSON.stringify(result.user))
+    setAuthUser(result.user)
+    setAuthToken(result.token)
+    setError('')
+  }
+
+  const logout = () => {
+    localStorage.removeItem('ft_token')
+    localStorage.removeItem('ft_user')
+    setAuthToken('')
+    setAuthUser(null)
+    setData({ customers: [], kendaraan: [], service: [], transactions: [] })
+  }
+
+  if (authChecking) return <div className="auth-loading">Memeriksa sesi Family Teknik...</div>
+  if (!authToken) return <AuthScreen setupRequired={setupRequired} onSuccess={handleAuthSuccess} />
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -137,7 +187,7 @@ function App() {
       <div className="sidebar-foot"><span className="status-dot" /> Sistem Manajemen Bengkel</div>
     </aside>
     <main className="main">
-      <header className="topbar"><div><span className="eyebrow">FAMILY TEKNIK / MANAGEMENT</span><h1>{active === 'dashboard' ? 'Dashboard' : active === 'rfm' ? 'Analisis Pelanggan RFM' : current.title}</h1></div><button className="button secondary" onClick={load}>↻ Perbarui data</button></header>
+      <header className="topbar"><div><span className="eyebrow">FAMILY TEKNIK / MANAGEMENT</span><h1>{active === 'dashboard' ? 'Dashboard' : active === 'rfm' ? 'Analisis Pelanggan RFM' : current.title}</h1></div><div className="topbar-actions"><span className="user-label">{authUser?.full_name || authUser?.username || 'Admin'}</span><button className="button secondary" onClick={load}>Perbarui data</button><button className="button logout-button" onClick={logout}>Keluar</button></div></header>
       {error && <div className="alert error">{error}</div>}
       {notice && <div className="alert">{notice}</div>}
       {loading && <p className="muted">Memuat data...</p>}
@@ -180,6 +230,59 @@ function App() {
       <footer>Family Teknik · Sistem Rekomendasi Promo Adaptif berbasis RFM</footer>
     </main>
   </div>
+}
+
+function AuthScreen({ setupRequired, onSuccess }) {
+  const [fullName, setFullName] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const submit = async (event) => {
+    event.preventDefault()
+    setError('')
+    if (setupRequired && password !== confirmPassword) {
+      setError('Konfirmasi password tidak sama.')
+      return
+    }
+    setLoading(true)
+    try {
+      const response = await fetch(API + (setupRequired ? '/api/auth/setup' : '/api/auth/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(setupRequired
+          ? { full_name: fullName, username, password }
+          : { username, password })
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.message || 'Autentikasi gagal.')
+      onSuccess(result)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return <main className="auth-page">
+    <section className="auth-card">
+      <div className="auth-brand"><div className="brand-mark">FT</div><div><strong>Family Teknik</strong><small>Workshop Management</small></div></div>
+      <span className="eyebrow">SISTEM MANAJEMEN BENGKEL</span>
+      <h1>{setupRequired ? 'Buat akun administrator' : 'Selamat datang kembali'}</h1>
+      <p className="auth-description">{setupRequired ? 'Buat akun admin pertama untuk mulai menggunakan aplikasi Family Teknik.' : 'Masuk menggunakan akun administrator Family Teknik.'}</p>
+      {error && <div className="alert error">{error}</div>}
+      <form className="form auth-form" onSubmit={submit}>
+        {setupRequired && <label>Nama lengkap<input required minLength={2} maxLength={120} autoComplete="name" value={fullName} onChange={e => setFullName(e.target.value)} placeholder="Nama administrator" /></label>}
+        <label>Username<input required minLength={4} maxLength={60} autoComplete="username" value={username} onChange={e => setUsername(e.target.value.toLowerCase())} placeholder="Masukkan username" /></label>
+        <label>Password<input required minLength={8} type="password" autoComplete={setupRequired ? 'new-password' : 'current-password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="Minimal 8 karakter" /></label>
+        {setupRequired && <label>Konfirmasi password<input required minLength={8} type="password" autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Ulangi password" /></label>}
+        <button className="button primary auth-submit" disabled={loading}>{loading ? 'Memproses...' : setupRequired ? 'Buat akun dan masuk' : 'Masuk'}</button>
+      </form>
+      <p className="auth-footnote">{setupRequired ? 'Password disimpan dalam bentuk hash pada database.' : 'Akses aplikasi hanya tersedia untuk akun yang terdaftar.'}</p>
+    </section>
+  </main>
 }
 
 function Stat({ label, value, icon }) { return <div className="stat-card"><div className="stat-icon">{icon}</div><span>{label}</span><strong>{value}</strong></div> }
