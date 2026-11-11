@@ -1,457 +1,471 @@
+require("dotenv").config();
 const express = require("express");
+const cors = require("cors");
 const axios = require("axios");
+const crypto = require("crypto");
+const { promisify } = require("util");
 const db = require("./db");
 const dbRfm = require("./db_rfm");
-const cors = require("cors");
 
 const app = express();
-const PORT = 5000;
+const PORT = Number(process.env.PORT || 5000);
+const AI_URL = process.env.AI_URL || "http://127.0.0.1:5001";
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 120000);
+const FRONTEND_URL = process.env.FRONTEND_URL || "";
+const scrypt = promisify(crypto.scrypt);
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+const SESSION_DURATION = 8 * 60 * 60;
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({ origin: FRONTEND_URL || true }));
+app.use(express.json({ limit: "1mb" }));
 
-
-app.get("/", (req, res)=> {
-    res.json({
-        message: "Backend family teknik berjalan"
-    });
+const runQuery = (sql, values = []) => new Promise((resolve, reject) => {
+  db.query(sql, values, (error, results) => error ? reject(error) : resolve(results));
 });
 
-// GET ALL CUSTOMERS
-app.get("/api/customers", (req, res)=> {
-    const sql = "SELECT * FROM customers";
+const sendError = (res, error, message = "Terjadi kesalahan pada server") => {
+  console.error(message, error.message);
+  res.status(500).json({ message, error: error.message });
+};
 
-    db.query (sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data customers",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
+function prepareDuplicateFields(resource, body) {
+  if (resource === "customers" && Object.prototype.hasOwnProperty.call(body, "phone")) {
+    body.phone_normalized = body.phone ? String(body.phone).replace(/\\D/g, "") || null : null;
+  }
+  if (resource === "kendaraan" && Object.prototype.hasOwnProperty.call(body, "plat_nomer")) {
+    body.plat_normalized = String(body.plat_nomer || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  }
+  if (resource === "service" && Object.prototype.hasOwnProperty.call(body, "description")) {
+    body.description_hash = crypto.createHash("sha256")
+      .update(String(body.description || "").trim().toLowerCase())
+      .digest("hex");
+  }
+  return body;
+}
+
+function normalizeFieldValue(resource, field, value) {
+  if (value === "") return null;
+  if (resource === "transactions" && field === "transactions_date" && typeof value === "string") {
+    return value.replace("T", " ");
+  }
+  return value;
+}
+
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derived = await scrypt(password, salt, 64);
+  return `scrypt:${salt}:${derived.toString("hex")}`;
+}
+
+async function verifyPassword(password, storedHash) {
+  const [algorithm, salt, storedKey] = String(storedHash || "").split(":");
+  if (algorithm !== "scrypt" || !salt || !storedKey) return false;
+  const derived = await scrypt(password, salt, 64);
+  const expected = Buffer.from(storedKey, "hex");
+  return expected.length === derived.length && crypto.timingSafeEqual(expected, derived);
+}
+
+function signToken(user) {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    sub: user.id,
+    username: user.username,
+    full_name: user.full_name,
+    exp: Math.floor(Date.now() / 1000) + SESSION_DURATION,
+  })).toString("base64url");
+  const input = header + "." + payload;
+  const signature = crypto.createHmac("sha256", SESSION_SECRET).update(input).digest("base64url");
+  return input + "." + signature;
+}
+
+function verifyToken(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) return null;
+  const input = parts[0] + "." + parts[1];
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(input).digest();
+  const received = Buffer.from(parts[2], "base64url");
+  if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    if (!payload.sub || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLoginLog(req, userId, username, status) {
+  await runQuery(
+    "INSERT INTO login_logs (user_id, username, login_status, ip_address, user_agent) VALUES (?, ?, ?, ?, ?)",
+    [userId || null, username, status, req.ip || null, String(req.get("user-agent") || "").slice(0, 255)]
+  );
+}
+
+function requireAuth(req, res, next) {
+  const authorization = req.get("authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const user = verifyToken(token);
+  if (!user) return res.status(401).json({ message: "Sesi berakhir. Silakan login kembali." });
+  req.user = user;
+  next();
+}
+
+app.get("/", (req, res) => res.json({ message: "Backend Family Teknik berjalan" }));
+app.get("/api/health", async (req, res) => {
+  try {
+    await runQuery("SELECT 1");
+    res.json({ status: "ok", database: "connected", ai_url: AI_URL });
+  } catch (error) {
+    sendError(res, error, "Backend aktif, tetapi database belum terhubung");
+  }
 });
 
-// GET CUSTOMER BY ID
-app.get("/api/customers/:id", (req, res)=> {
-    const customersid = req.params.id;
-    const sql = "SELECT * FROM customers WHERE id = ?";
-
-    db.query(sql, [customersid], (err, results)=> {
-     if (err) {
-        return res.status(500).json({
-            message: "Terjadi kesalahan saat mengambil data customer",
-            error: err.message
-        });
-     }
-     if (results.length === 0) {
-        return res.status(404).json({
-            message: "Customer tidak ditemukan"
-        });
-     }
-     res.json(results[0]);
-    });
+app.get("/api/auth/status", async (req, res) => {
+  try {
+    const [rows] = await dbRfm.query("SELECT COUNT(*) AS total FROM users");
+    res.json({ setup_required: Number(rows[0].total) === 0 });
+  } catch (error) {
+    sendError(res, error, "Gagal memeriksa status akun");
+  }
 });
 
-// POST CREATE CUSTOMER
-app.post("/api/customers", (req, res)=> {
-    const { name, phone, address } = req.body;
-    
-    if (!name) {
-        return res.status(400).json({
-            message: "Nama customer harus diisi"
-        });
+app.post("/api/auth/setup", async (req, res) => {
+  const fullName = String(req.body?.full_name || "").trim();
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (fullName.length < 2 || fullName.length > 120) {
+    return res.status(400).json({ message: "Nama lengkap harus berisi 2 sampai 120 karakter." });
+  }
+  if (!/^[a-z0-9._-]{4,60}$/.test(username)) {
+    return res.status(400).json({ message: "Username harus 4 sampai 60 karakter, gunakan huruf kecil, angka, titik, garis bawah, atau tanda hubung." });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ message: "Password minimal 8 karakter." });
+  }
+
+  let connection;
+  try {
+    connection = await dbRfm.getConnection();
+    await connection.beginTransaction();
+    const [existing] = await connection.query("SELECT id FROM users LIMIT 1 FOR UPDATE");
+    if (existing.length) {
+      await connection.rollback();
+      return res.status(409).json({ message: "Akun admin sudah dibuat. Silakan login." });
     }
-     const sql = `INSERT INTO customers 
-     (name, phone, address) 
-     VALUES (?, ?, ?)`;
-
-     db.query(
-        sql,
-        [name, phone, address],
-        (err, results)=> {
-            if (err) {
-                return res.status(500).json({
-                    message: "Terjadi kesalahan saat menambahkan customer",
-                    error: err.message
-                });
-            }
-            res.status(201).json({
-                message: "Customer berhasil ditambahkan",
-                id: results.insertId
-            });
-        }
-     )
+    const passwordHash = await hashPassword(password);
+    const [result] = await connection.query(
+      "INSERT INTO users (full_name, username, password_hash) VALUES (?, ?, ?)",
+      [fullName, username, passwordHash]
+    );
+    await connection.commit();
+    const user = { id: result.insertId, full_name: fullName, username };
+    await writeLoginLog(req, user.id, username, "success");
+    res.status(201).json({ message: "Akun admin berhasil dibuat.", token: signToken(user), user });
+  } catch (error) {
+    if (connection) await connection.rollback().catch(() => {});
+    if (error.code === "ER_DUP_ENTRY") return res.status(409).json({ message: "Username sudah digunakan." });
+    sendError(res, error, "Gagal membuat akun admin");
+  } finally {
+    if (connection) connection.release();
+  }
 });
 
+app.post("/api/auth/login", async (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (!username || !password) return res.status(400).json({ message: "Username dan password wajib diisi." });
+  try {
+    const [rows] = await dbRfm.query(
+      "SELECT id, full_name, username, password_hash FROM users WHERE username = ? LIMIT 1",
+      [username]
+    );
+    const user = rows[0];
+    const valid = user ? await verifyPassword(password, user.password_hash) : false;
+    await writeLoginLog(req, user?.id, username, valid ? "success" : "failed");
+    if (!valid) return res.status(401).json({ message: "Username atau password salah." });
+    await dbRfm.query("UPDATE users SET last_login_at = NOW() WHERE id = ?", [user.id]);
+    const publicUser = { id: user.id, full_name: user.full_name, username: user.username };
+    res.json({ message: "Login berhasil.", token: signToken(publicUser), user: publicUser });
+  } catch (error) {
+    sendError(res, error, "Gagal memproses login");
+  }
+});
 
-// put UPDATE CUSTOMER BY ID
+app.use("/api", requireAuth);
 
-app.put("/api/customers/:id", (req, res)=> {
-    const id = req.params.id;
-    const { name, phone, address } = req.body;
+app.get("/api/data-integrity", async (req, res) => {
+  try {
+    const [customers, vehicles, services, transactions] = await Promise.all([
+      runQuery("SELECT REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '') AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM customers WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '') <> '' GROUP BY duplicate_value HAVING COUNT(*) > 1"),
+      runQuery("SELECT UPPER(REGEXP_REPLACE(plat_nomer, '[^A-Z0-9]', '')) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM kendaraan GROUP BY duplicate_value HAVING COUNT(*) > 1"),
+      runQuery("SELECT CONCAT_WS('|', customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost) AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM service GROUP BY customers_id, kendaraan_id, service_date, LOWER(TRIM(description)), service_cost HAVING COUNT(*) > 1"),
+      runQuery("SELECT service_id AS duplicate_value, GROUP_CONCAT(id ORDER BY id) AS record_ids, COUNT(*) AS total FROM transactions WHERE service_id IS NOT NULL GROUP BY service_id HAVING COUNT(*) > 1"),
+    ]);
+    const groups = [
+      ...customers.map(row => ({ type: "Pelanggan", field: "Nomor telepon", ...row })),
+      ...vehicles.map(row => ({ type: "Kendaraan", field: "Nomor polisi", ...row })),
+      ...services.map(row => ({ type: "Servis", field: "Kombinasi data servis", ...row })),
+      ...transactions.map(row => ({ type: "Transaksi", field: "Servis terkait", ...row })),
+    ];
+    res.json({ checked_at: new Date().toISOString(), duplicate_groups: groups.length, duplicate_records: groups.reduce((sum, group) => sum + Number(group.total), 0), groups });
+  } catch (error) {
+    sendError(res, error, "Gagal memeriksa data ganda. Pastikan migrasi keamanan data sudah dijalankan.");
+  }
+});
 
-    const sql = "UPDATE customers SET name = ?, phone = ?, address = ? WHERE id = ?";
-
-    db.query(sql, [name, phone, address, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate customer",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Customer berhasil diupdate",
-            data: results
-        });
+app.get("/api/dashboard", async (req, res) => {
+  try {
+    const [customers, vehicles, services, transactions, revenue] = await Promise.all([
+      runQuery("SELECT COUNT(*) AS total FROM customers"),
+      runQuery("SELECT COUNT(*) AS total FROM kendaraan"),
+      runQuery("SELECT COUNT(*) AS total FROM service"),
+      runQuery("SELECT COUNT(*) AS total FROM transactions"),
+      runQuery("SELECT COALESCE(SUM(total_amount), 0) AS total FROM transactions"),
+    ]);
+    res.json({
+      customers: customers[0].total,
+      vehicles: vehicles[0].total,
+      services: services[0].total,
+      transactions: transactions[0].total,
+      revenue: Number(revenue[0].total),
     });
+  } catch (error) {
+    sendError(res, error, "Gagal mengambil ringkasan dashboard");
+  }
 });
 
-// DELETE CUSTOMER BY ID
-app.delete("/api/customers/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM customers WHERE id = ?";
+const resources = {
+  customers: {
+    table: "customers",
+    columns: ["name", "phone", "phone_normalized", "address"],
+    required: ["name"],
+    order: "id DESC",
+  },
+  kendaraan: {
+    table: "kendaraan",
+    columns: ["customers_id", "plat_nomer", "plat_normalized", "brand", "tipe", "year"],
+    required: ["customers_id", "plat_nomer", "brand", "tipe"],
+    order: "id DESC",
+  },
+  service: {
+    table: "service",
+    columns: ["customers_id", "kendaraan_id", "service_date", "description", "description_hash", "service_cost"],
+    required: ["customers_id", "kendaraan_id", "service_date", "description"],
+    order: "service_date DESC, id DESC",
+  },
+  transactions: {
+    table: "transactions",
+    columns: ["customers_id", "kendaraan_id", "service_id", "total_amount", "transactions_date"],
+    required: ["customers_id", "kendaraan_id", "total_amount"],
+    order: "transactions_date DESC, id DESC",
+  },
+};
 
-    db.query(sql, [id], (err, results)=> {
-        if (err){
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus customer",
-                error: err.message
-            });
-        }
+function duplicateMessage(resource) {
+  const messages = {
+    customers: "Nomor telepon sudah terdaftar pada pelanggan lain.",
+    kendaraan: "Nomor polisi sudah terdaftar. Periksa kembali kendaraan tersebut.",
+    service: "Data servis dengan pelanggan, kendaraan, tanggal, deskripsi, dan biaya yang sama sudah tercatat.",
+    transactions: "Servis tersebut sudah memiliki transaksi. Pilih servis lain atau kosongkan pilihan servis jika transaksi tidak terkait servis."
+  };
+  return messages[resource] || "Data yang sama sudah terdaftar.";
+}
 
-        res.json({
-            message: "Customer berhasil dihapus",
-            data: results
-        });
-    });
+async function findDuplicate(resource, body, excludeId = null) {
+  const skip = excludeId ? " AND id <> ?" : "";
+  const valuesFor = (values) => excludeId ? [...values, excludeId] : values;
+
+  if (resource === "customers" && body.phone) {
+    const phone = String(body.phone).replace(/\D/g, "");
+    if (phone) {
+      const rows = await runQuery(
+        "SELECT id FROM customers WHERE phone_normalized = ?"+skip+" LIMIT 1",
+        valuesFor([phone])
+      );
+      if (rows.length) return duplicateMessage(resource);
+    }
+  }
+
+  if (resource === "kendaraan" && body.plat_nomer) {
+    const plate = String(body.plat_normalized || "");
+    const rows = await runQuery(
+      "SELECT id FROM kendaraan WHERE plat_normalized = ?"+skip+" LIMIT 1",
+      valuesFor([plate])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+
+  if (resource === "service") {
+    const rows = await runQuery(
+      "SELECT id FROM service WHERE customers_id = ? AND kendaraan_id = ? AND service_date = ? AND description_hash = ? AND service_cost = ?"+skip+" LIMIT 1",
+      valuesFor([body.customers_id, body.kendaraan_id, body.service_date, body.description_hash, body.service_cost ?? 0])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+
+  if (resource === "transactions" && body.service_id) {
+    const rows = await runQuery(
+      "SELECT id FROM transactions WHERE service_id = ?"+skip+" LIMIT 1",
+      valuesFor([body.service_id])
+    );
+    if (rows.length) return duplicateMessage(resource);
+  }
+  return null;
+}
+
+function handleDuplicateError(res, error, resource) {
+  if (error.code === "ER_DUP_ENTRY") {
+    return res.status(409).json({ message: duplicateMessage(resource), code: "DUPLICATE_DATA" });
+  }
+  return null;
+}
+
+async function validateRelations(resource, body) {
+  if (resource === "kendaraan") {
+    const [customers] = await dbRfm.query("SELECT id FROM customers WHERE id = ?", [body.customers_id]);
+    if (!customers.length) return "Pelanggan tidak ditemukan.";
+  }
+
+  if (resource === "service" || resource === "transactions") {
+    const [vehicles] = await dbRfm.query("SELECT customers_id FROM kendaraan WHERE id = ?", [body.kendaraan_id]);
+    if (!vehicles.length) return "Kendaraan tidak ditemukan.";
+    if (body.customers_id && Number(vehicles[0].customers_id) !== Number(body.customers_id)) {
+      return "Kendaraan tersebut bukan milik pelanggan yang dipilih.";
+    }
+  }
+
+  if (resource === "transactions" && body.service_id) {
+    const [services] = await dbRfm.query("SELECT customers_id, kendaraan_id FROM service WHERE id = ?", [body.service_id]);
+    if (!services.length) return "Data servis tidak ditemukan.";
+    if (Number(services[0].customers_id) !== Number(body.customers_id) ||
+        Number(services[0].kendaraan_id) !== Number(body.kendaraan_id)) {
+      return "Servis yang dipilih tidak cocok dengan pelanggan atau kendaraan.";
+    }
+  }
+  return null;
+}
+
+for (const [resource, config] of Object.entries(resources)) {
+  app.get(`/api/${resource}`, async (req, res) => {
+    try {
+      const rows = await runQuery(`SELECT * FROM ${config.table} ORDER BY ${config.order}`);
+      res.json(rows);
+    } catch (error) {
+      sendError(res, error, `Gagal mengambil data ${resource}`);
+    }
+  });
+
+  app.get(`/api/${resource}/:id`, async (req, res) => {
+    try {
+      const rows = await runQuery(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
+      if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+      res.json(rows[0]);
+    } catch (error) {
+      sendError(res, error, `Gagal mengambil detail ${resource}`);
+    }
+  });
+
+  app.post(`/api/${resource}`, async (req, res) => {
+    try {
+      const body = prepareDuplicateFields(resource, { ...(req.body || {}) });
+      const missing = config.required.filter((field) => body[field] === undefined || body[field] === null || body[field] === "");
+      if (missing.length) return res.status(400).json({ message: `Kolom wajib diisi: ${missing.join(", ")}` });
+      const relationError = await validateRelations(resource, body);
+      if (relationError) return res.status(400).json({ message: relationError });
+      const duplicateError = await findDuplicate(resource, body);
+      if (duplicateError) return res.status(409).json({ message: duplicateError, code: "DUPLICATE_DATA" });
+      const columns = config.columns.filter((field) =>
+        body[field] !== undefined &&
+        !(resource === "transactions" && field === "transactions_date" && body[field] === "")
+      );
+      const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
+      const placeholders = columns.map(() => "?").join(", ");
+      const result = await runQuery(
+        `INSERT INTO ${config.table} (${columns.join(", ")}) VALUES (${placeholders})`,
+        values
+      );
+      res.status(201).json({ message: "Data berhasil ditambahkan", id: result.insertId });
+    } catch (error) {
+      if (handleDuplicateError(res, error, resource)) return;
+      sendError(res, error, `Gagal menambahkan data ${resource}`);
+    }
+  });
+
+  app.put(`/api/${resource}/:id`, async (req, res) => {
+    try {
+      const body = prepareDuplicateFields(resource, { ...(req.body || {}) });
+      const columns = config.columns.filter((field) =>
+        body[field] !== undefined &&
+        !(resource === "transactions" && field === "transactions_date" && body[field] === "")
+      );
+      if (!columns.length) return res.status(400).json({ message: "Tidak ada data yang diperbarui" });
+      const [existingRows] = await dbRfm.query(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
+      if (!existingRows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+      const mergedBody = prepareDuplicateFields(resource, { ...existingRows[0], ...body });
+      const relationError = await validateRelations(resource, mergedBody);
+      if (relationError) return res.status(400).json({ message: relationError });
+      const duplicateError = await findDuplicate(resource, mergedBody, Number(req.params.id));
+      if (duplicateError) return res.status(409).json({ message: duplicateError, code: "DUPLICATE_DATA" });
+      const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
+      await runQuery(
+        `UPDATE ${config.table} SET ${columns.map((field) => `${field} = ?`).join(", ")} WHERE id = ?`,
+        [...values, req.params.id]
+      );
+      res.json({ message: "Data berhasil diperbarui" });
+    } catch (error) {
+      if (handleDuplicateError(res, error, resource)) return;
+      sendError(res, error, `Gagal memperbarui data ${resource}`);
+    }
+  });
+
+  app.delete(`/api/${resource}/:id`, async (req, res) => {
+    try {
+      const result = await runQuery(`DELETE FROM ${config.table} WHERE id = ?`, [req.params.id]);
+      if (!result.affectedRows) return res.status(404).json({ message: "Data tidak ditemukan" });
+      res.json({ message: "Data berhasil dihapus" });
+    } catch (error) {
+      sendError(res, error, "Data tidak dapat dihapus. Periksa relasi data terlebih dahulu.");
+    }
+  });
+}
+
+app.get("/api/customer-history/:id", async (req, res) => {
+  try {
+    const rows = await runQuery(
+      `SELECT t.*, c.name AS customer_name, k.plat_nomer, k.brand, k.tipe,
+              s.description AS service_description
+       FROM transactions t
+       JOIN customers c ON c.id = t.customers_id
+       JOIN kendaraan k ON k.id = t.kendaraan_id
+       LEFT JOIN service s ON s.id = t.service_id
+       WHERE t.customers_id = ?
+       ORDER BY t.transactions_date DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    sendError(res, error, "Gagal mengambil riwayat pelanggan");
+  }
 });
-
-//===================== KENDARAAN
-
-// GET ALL KENDARAAN
-app.get("/api/kendaraan", (req, res)=> {
-    const sql = "SELECT * FROM kendaraan";
-
-    db.query (sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data customers",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// GET KENDARAAN BY ID
-app.get("/api/kendaraan/:id", (req, res)=> {
-    const kendaraanid = req.params.id;
-    const sql = "SELECT * FROM kendaraan WHERE id = ?";
-
-    db.query(sql, [kendaraanid], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data kendaraan",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// POST CREATE KENDARAAN
-app.post("/api/kendaraan", (req, res)=> {
-    const { customers_id, plat_nomer, tipe, brand, year} = req.body;
-
-    const sql = `INSERT INTO kendaraan 
-     (customers_id, plat_nomer, tipe, brand, year) 
-     VALUES (?, ?, ?, ?, ?)`;
-
-     db.query(
-        sql,
-        [customers_id, plat_nomer, tipe, brand, year],
-        (err, results)=> {
-            if (err) {
-                return res.status(500).json({
-                    message: "Terjadi kesalahan saat menambahkan kendaraan",
-                    error: err.message
-                });
-            }
-            res.status(201).json({
-                message: "Kendaraan berhasil ditambahkan",
-                id: results.insertId
-            });
-        }
-     )
-});
-
-// put UPDATE KENDARAAN BY ID
-app.put("/api/kendaraan/:id", (req, res)=> {
-    const id = req.params.id;
-    const { customers_id, plat_nomer, tipe, brand, year} = req.body;
-
-    const sql = "UPDATE kendaraan SET customers_id = ?, plat_nomer = ?, tipe = ?, brand = ?, year = ? WHERE id = ?";
-
-    db.query(sql, [customers_id, plat_nomer, tipe, brand, year, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate kendaraan",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Kendaraan berhasil diupdate",
-            data: results
-        });
-    });
-});
-
-// DELETE KENDARAAN BY ID
-app.delete("/api/kendaraan/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM kendaraan WHERE id = ?";
-    db.query(sql, [id], (err, results)=> {
-        if (err){
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus kendaraan",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Kendaraan berhasil dihapus",
-            data: results
-        });
-    });
-});
-
-// ===================== SERVICE
-
-// GET ALL SERVICE
-app.get("/api/service", (req, res)=> {
-    const sql = "SELECT * FROM service";
-    db.query(sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data service",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// GET SERVICE BY ID
-app.get("/api/service/:id", (req, res)=> {
-    const serviceid = req.params.id;
-    const sql = "SELECT * FROM service WHERE id = ?";
-    db.query(sql, [serviceid], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data service",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-
-// POST CREATE SERVICE
-app.post("/api/service", (req, res)=> {
-    const { customers_id, kendaraan_id, service_date, description, service_cost} = req.body;
-
-    const sql = `INSERT INTO service 
-     (customers_id, kendaraan_id, service_date, description, service_cost) 
-     VALUES (?, ?, ?, ?, ?)`;
-
-     db.query(
-        sql,
-        [customers_id, kendaraan_id, service_date, description, service_cost],
-        (err, results)=> {
-            if (err) {
-                return res.status(500).json({
-                    message: "Terjadi kesalahan saat menambahkan service",
-                    error: err.message
-                });
-            }
-            res.status(201).json({
-                message: "service berhasil ditambahkan",
-                id: results.insertId
-            });
-        }
-     )
-});
-
-// put UPDATE SERVICE BY ID
-app.put("/api/service/:id", (req, res)=> {
-    const id = req.params.id;
-    const { kendaraan_id, service_date, description, cost} = req.body;
-
-    const sql = "UPDATE service SET kendaraan_id = ?, service_date = ?, description = ?, cost = ? WHERE id = ?";
-
-    db.query(sql, [kendaraan_id, service_date, description, cost, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate service",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Service berhasil diupdate",
-            data: results
-        });
-    });
-});
-
-// DELETE SERVICE BY ID
-app.delete("/api/service/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM service WHERE id = ?";
-    db.query(sql, [id], (err, results)=> {
-        if (err){
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus service",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Service berhasil dihapus",
-            data: results
-        });
-    });
-});
-
-
-//===================== TRANSAKSI
-
-// GET ALL TRANSAKSI  
-app.get("/api/transactions", (req, res)=> {
-    const sql = "SELECT * FROM transactions";
-    db.query(sql, (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data transaksi",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// GET TRANSAKSI BY ID
-app.get("/api/transactions/:id", (req, res)=> {
-    const transaksi_id = req.params.id;
-    const sql = "SELECT * FROM transactions WHERE id = ?";
-    db.query(sql, [transaksi_id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengambil data transaksi",
-                error: err.message
-            });
-        }
-        res.json(results);
-    });
-});
-
-// POST CREATE TRANSAKSI
-app.post("/api/transactions", (req, res)=> {
-    const { customers_id, kendaraan_id, service_id, total_amount, transactions_date} = req.body;
-
-    const sql = "INSERT INTO transactions (customers_id, kendaraan_id, service_id, total_amount, transactions_date) VALUES (?, ?, ?, ?, ?)";
-
-    db.query(sql, [customers_id, kendaraan_id, service_id, total_amount, transactions_date], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menambahkan transaksi",
-                error: err.message
-            });
-        }
-        res.status(201).json({
-            message: "Transaksi berhasil ditambahkan",
-            id: results.insertId
-        });
-    });
-});
-
-// put UPDATE TRANSAKSI BY ID
-app.put("/api/transactions/:id", (req, res)=> {
-    const id = req.params.id;
-    const { costumers_id, service_id, total_amount, transactions_date} = req.body;  
-    const sql = "UPDATE transaksi SET costumers_id = ?, service_id = ?, total_amount = ?, transactions_date = ? WHERE id = ?";
-
-    db.query(sql, [costumers_id, service_id, total_amount, transactions_date, id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat mengupdate transaksi",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Transaksi berhasil diupdate",
-            data: results
-        });
-    });
-});
-
-// DELETE TRANSAKSI BY ID
-app.delete("/api/transactions/:id", (req, res)=> {
-    const id = req.params.id;
-    const sql = "DELETE FROM transaksi WHERE id = ?";
-
-    db.query(sql, [id], (err, results)=> {
-        if (err) {
-            return res.status(500).json({
-                message: "Terjadi kesalahan saat menghapus transaksi",
-                error: err.message
-            });
-        }
-        res.json({
-            message: "Transaksi berhasil dihapus",
-            data: results
-        });
-    });
-});
-
-
-// ENDPOINTS RFM
 
 app.post("/api/rfm/:customers_id", async (req, res) => {
-    try {
-        const customersId = req.params.customers_id;
-
-        const [transactions] = await dbRfm.query(
-            `SELECT
-                transactions_date,
-                total_amount
-             FROM transactions
-             WHERE customers_id = ?
-             ORDER BY transactions_date ASC`,
-            [customersId]
-        );
-
-        const pythonResponse = await axios.post(
-            "http://localhost:5001/rfm",
-            {
-                transactions: transactions
-            }
-        );
-
-        res.json({
-            customers_id: customersId,
-            result: pythonResponse.data
-        });
-
-    } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            message: "Gagal menghitung RFM",
-            error: error.message
-        });
-    }
+  try {
+    const customersId = req.params.customers_id;
+    const [transactions] = await dbRfm.query(
+      `SELECT transactions_date, total_amount
+       FROM transactions
+       WHERE customers_id = ?
+       ORDER BY transactions_date ASC`,
+      [customersId]
+    );
+    const response = await axios.post(`${AI_URL}/rfm`, { transactions }, { timeout: AI_TIMEOUT_MS });
+    res.json({ customers_id: Number(customersId), transaction_count: transactions.length, result: response.data });
+  } catch (error) {
+    const detail = error.response?.data?.message || error.message;
+    res.status(502).json({ message: "Gagal menghitung RFM. Pastikan layanan AI aktif.", error: detail });
+  }
 });
-// start the server
-app.listen(PORT, ()=> {
-    console.log(`server berjalan di http://localhost:${PORT}`);
-});
+
+app.use((req, res) => res.status(404).json({ message: "Endpoint tidak ditemukan" }));
+
+app.listen(PORT, "0.0.0.0", () => console.log(`Backend Family Teknik berjalan pada port ${PORT}`));

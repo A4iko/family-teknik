@@ -1,0 +1,93 @@
+CREATE DATABASE IF NOT EXISTS family_teknik
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE family_teknik;
+
+CREATE TABLE IF NOT EXISTS customers (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  phone VARCHAR(30) NULL,
+  phone_normalized VARCHAR(30) NULL,
+  address TEXT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_customers_phone_normalized (phone_normalized)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS kendaraan (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  customers_id INT UNSIGNED NOT NULL,
+  plat_nomer VARCHAR(20) NOT NULL,
+  plat_normalized VARCHAR(20) NOT NULL,
+  brand VARCHAR(80) NOT NULL,
+  tipe VARCHAR(80) NOT NULL,
+  year SMALLINT UNSIGNED NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_kendaraan_customer FOREIGN KEY (customers_id)
+    REFERENCES customers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  UNIQUE KEY uq_kendaraan_plat_normalized (plat_normalized)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS service (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  customers_id INT UNSIGNED NOT NULL,
+  kendaraan_id INT UNSIGNED NOT NULL,
+  service_date DATE NOT NULL,
+  description TEXT NOT NULL,
+  service_cost DECIMAL(14,2) NOT NULL DEFAULT 0,
+  description_hash CHAR(64) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_service_customer FOREIGN KEY (customers_id)
+    REFERENCES customers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_service_kendaraan FOREIGN KEY (kendaraan_id)
+    REFERENCES kendaraan(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  INDEX idx_service_date (service_date),
+  UNIQUE KEY uq_service_duplicate (customers_id, kendaraan_id, service_date, description_hash, service_cost)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS transactions (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  customers_id INT UNSIGNED NOT NULL,
+  kendaraan_id INT UNSIGNED NOT NULL,
+  service_id INT UNSIGNED NULL,
+  total_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+  transactions_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_transaction_customer FOREIGN KEY (customers_id)
+    REFERENCES customers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_transaction_kendaraan FOREIGN KEY (kendaraan_id)
+    REFERENCES kendaraan(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_transaction_service FOREIGN KEY (service_id)
+    REFERENCES service(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  INDEX idx_transaction_customer_date (customers_id, transactions_date),
+  INDEX idx_transaction_date (transactions_date),
+  UNIQUE KEY uq_transaction_service (service_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS users (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  full_name VARCHAR(120) NOT NULL,
+  username VARCHAR(60) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  last_login_at DATETIME NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_users_username (username)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS login_logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NULL,
+  username VARCHAR(60) NOT NULL,
+  login_status ENUM('success', 'failed') NOT NULL,
+  ip_address VARCHAR(45) NULL,
+  user_agent VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_login_logs_user FOREIGN KEY (user_id)
+    REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  INDEX idx_login_logs_user_date (user_id, created_at),
+  INDEX idx_login_logs_username_date (username, created_at)
+) ENGINE=InnoDB;
+
+-- Data contoh opsional. Hapus komentar untuk mengisi data demo.
+-- INSERT INTO customers (name, phone, address) VALUES
+-- ('Budi Santoso', '081234567890', 'Depok'),
+-- ('Siti Aminah', '081298765432', 'Bogor');
