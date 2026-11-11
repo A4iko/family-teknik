@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+const API = import.meta.env.VITE_API_URL || ''
 const apiFetch = (path, options = {}) => {
   const headers = { ...(options.headers || {}), Authorization: 'Bearer ' + (localStorage.getItem('ft_token') || '') }
   return fetch(API + path, { ...options, headers }).then(response => {
