@@ -9,7 +9,19 @@
     "backend": {
       "root": "backend/",
       "framework": "express",
-      "entrypoint": "server.js"
+      "entrypoint": "server.js",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "ai",
+          "format": "url",
+          "env": "AI_URL"
+        }
+      ]
+    },
+    "ai": {
+      "root": "AI/",
+      "entrypoint": "app:app"
     }
   },
   "rewrites": [
