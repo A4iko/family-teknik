@@ -30,7 +30,7 @@ const sendError = (res, error, message = "Terjadi kesalahan pada server") => {
 
 function prepareDuplicateFields(resource, body) {
   if (resource === "customers" && Object.prototype.hasOwnProperty.call(body, "phone")) {
-    body.phone_normalized = body.phone ? String(body.phone).replace(/\\D/g, "") || null : null;
+    body.phone_normalized = body.phone ? String(body.phone).replace(/\D/g, "") || null : null;
   }
   if (resource === "kendaraan" && Object.prototype.hasOwnProperty.call(body, "plat_nomer")) {
     body.plat_normalized = String(body.plat_nomer || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -237,24 +237,28 @@ app.get("/api/dashboard", async (req, res) => {
 const resources = {
   customers: {
     table: "customers",
+    sequence: "ft_customers_seq",
     columns: ["name", "phone", "phone_normalized", "address"],
     required: ["name"],
     order: "id DESC",
   },
   kendaraan: {
     table: "kendaraan",
+    sequence: "ft_kendaraan_seq",
     columns: ["customers_id", "plat_nomer", "plat_normalized", "brand", "tipe", "year"],
     required: ["customers_id", "plat_nomer", "brand", "tipe"],
     order: "id DESC",
   },
   service: {
     table: "service",
+    sequence: "ft_service_seq",
     columns: ["customers_id", "kendaraan_id", "service_date", "description", "description_hash", "service_cost"],
     required: ["customers_id", "kendaraan_id", "service_date", "description"],
     order: "service_date DESC, id DESC",
   },
   transactions: {
     table: "transactions",
+    sequence: "ft_transactions_seq",
     columns: ["customers_id", "kendaraan_id", "service_id", "total_amount", "transactions_date"],
     required: ["customers_id", "kendaraan_id", "total_amount"],
     order: "transactions_date DESC, id DESC",
@@ -374,17 +378,26 @@ for (const [resource, config] of Object.entries(resources)) {
       if (relationError) return res.status(400).json({ message: relationError });
       const duplicateError = await findDuplicate(resource, body);
       if (duplicateError) return res.status(409).json({ message: duplicateError, code: "DUPLICATE_DATA" });
-      const columns = config.columns.filter((field) =>
+      // TiDB SEQUENCE menyediakan ID unik karena kolom id tabel belum AUTO_INCREMENT.
+      const idRows = await runQuery(`SELECT NEXTVAL(${config.sequence}) AS id`);
+      const newId = Number(idRows[0].id);
+      if (!Number.isSafeInteger(newId) || newId <= 0) {
+        throw new Error(`ID sequence tidak valid untuk ${resource}`);
+      }
+      const columns = ["id", ...config.columns.filter((field) =>
         body[field] !== undefined &&
         !(resource === "transactions" && field === "transactions_date" && body[field] === "")
-      );
-      const values = columns.map((field) => normalizeFieldValue(resource, field, body[field]));
+      )];
+      const values = [
+        newId,
+        ...columns.slice(1).map((field) => normalizeFieldValue(resource, field, body[field]))
+      ];
       const placeholders = columns.map(() => "?").join(", ");
-      const result = await runQuery(
+      await runQuery(
         `INSERT INTO ${config.table} (${columns.join(", ")}) VALUES (${placeholders})`,
         values
       );
-      res.status(201).json({ message: "Data berhasil ditambahkan", id: result.insertId });
+      res.status(201).json({ message: "Data berhasil ditambahkan", id: newId });
     } catch (error) {
       if (handleDuplicateError(res, error, resource)) return;
       sendError(res, error, `Gagal menambahkan data ${resource}`);
